@@ -45,13 +45,13 @@ from .models.cache import (
 from .sample_utils import make_logits_processors, make_sampler
 from .utils import _parse_size, load, sharded_load
 
-# Optional structured decoding support (https://github.com/velum-labs/handoffkit,
-# python/mlx-lm-structured). When the package is installed, OpenAI
-# `response_format` and vLLM-style `guided_json`/`guided_regex`/`guided_choice`
-# request parameters are enforced by masking logits with a compiled FSM; when
-# it is not, those parameters are ignored exactly like upstream mlx-lm.
+# Optional structured decoding support (see mlx_lm/structured). When the
+# `structured` extra's dependencies are installed, OpenAI `response_format`
+# and vLLM-style `guided_json`/`guided_regex`/`guided_choice` request
+# parameters are enforced by masking logits with a compiled FSM; otherwise
+# those parameters are ignored exactly like upstream mlx-lm.
 try:
-    from mlx_lm_structured.integration import (
+    from .structured.integration import (
         make_constraint_processor,
         parse_request_constraint,
     )
@@ -443,7 +443,7 @@ def _make_logits_processors(args, tokenizer, model_key):
     if args.logits.structured is not None:
         if make_constraint_processor is None:
             raise ValueError(
-                "structured output requires the mlx-lm-structured package"
+                "structured output requires the mlx-lm[structured] extra"
             )
         # The constraint processor goes last so penalties and logit bias
         # cannot unmask forbidden tokens.
@@ -1244,7 +1244,7 @@ class APIHandler(BaseHTTPRequestHandler):
         elif any(self.body.get(field) is not None for field in STRUCTURED_FIELDS):
             logging.warning(
                 "Structured output parameters were ignored: install "
-                "mlx-lm-structured to enforce them"
+                "mlx-lm[structured] to enforce them"
             )
 
         # Get stop sequences

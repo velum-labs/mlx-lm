@@ -42,6 +42,14 @@ from .models.cache import (
     LRUPromptCache,
     make_prompt_cache,
 )
+from .openai_compat import (
+    ToolCallFormatter,
+    forced_tool_instruction,
+    parse_structured_tool_calls,
+    resolve_tool_choice,
+    tool_call_schema,
+    validate_tools,
+)
 from .sample_utils import make_logits_processors, make_sampler
 from .utils import _parse_size, load, sharded_load
 
@@ -65,150 +73,6 @@ STRUCTURED_FIELDS = ("response_format", "guided_json", "guided_regex", "guided_c
 def get_system_fingerprint():
     gpu_arch = mx.device_info()["architecture"]
     return f"{__version__}-{mx.__version__}-{platform.platform()}-{gpu_arch}"
-
-
-class ToolCallFormatter:
-    def __init__(self, tool_parser, tools, streaming=False):
-        self._idx = 0
-        self._tool_parser = tool_parser
-        self._tools = tools
-        self._streaming = streaming
-
-    def _format(self, tc, index=None):
-        tc_id = tc.get("id") or f"call_{uuid.uuid4().hex}"
-        arguments = tc.get("arguments", {})
-        if not isinstance(arguments, str):
-            arguments = json.dumps(arguments, ensure_ascii=False)
-        out = {
-            "function": {
-                "name": tc["name"],
-                "arguments": arguments,
-            },
-            "type": "function",
-            "id": tc_id,
-        }
-        if self._streaming:
-            out["index"] = self._idx if index is None else index
-            if index is None:
-                self._idx += 1
-        return out
-
-    def format_parsed(self, tool_calls):
-        return [self._format(tc, index=i) for i, tc in enumerate(tool_calls)]
-
-    def __call__(self, tool_calls):
-        if not tool_calls:
-            return []
-
-        result = []
-        for tool_text in tool_calls:
-            try:
-                parsed = self._tool_parser(tool_text, self._tools)
-            except (ValueError, json.JSONDecodeError) as e:
-                logging.warning(
-                    f"Failed to parse tool call ({type(e).__name__}: {e}) — "
-                    f"tool text was likely truncated mid-generation."
-                )
-                continue
-            if not isinstance(parsed, list):
-                parsed = [parsed]
-            result.extend(self._format(tc) for tc in parsed)
-        return result
-
-
-def _tool_function(tool):
-    if not isinstance(tool, dict) or tool.get("type") != "function":
-        raise ValueError("tools entries must be {'type': 'function', 'function': {...}}")
-    function = tool.get("function")
-    if not isinstance(function, dict):
-        raise ValueError("function tool entries must include a function object")
-    name = function.get("name")
-    if not isinstance(name, str) or not name:
-        raise ValueError("function tools require a non-empty function.name")
-    parameters = function.get("parameters") or {"type": "object"}
-    if not isinstance(parameters, dict):
-        raise ValueError("function.parameters must be a JSON Schema object")
-    return function
-
-
-def _tool_schema(tool):
-    function = _tool_function(tool)
-    return {
-        "type": "object",
-        "properties": {
-            "name": {"enum": [function["name"]]},
-            "arguments": function.get("parameters") or {"type": "object"},
-        },
-        "required": ["name", "arguments"],
-        "additionalProperties": False,
-    }
-
-
-def _tool_call_schema(tools):
-    schemas = [_tool_schema(tool) for tool in tools]
-    return schemas[0] if len(schemas) == 1 else {"oneOf": schemas}
-
-
-def _parse_tool_choice(tool_choice, tools):
-    if tool_choice is None:
-        tool_choice = "auto"
-    if tool_choice in ("auto", "none"):
-        return tool_choice, None
-    if tool_choice == "required":
-        return tool_choice, tools
-    if isinstance(tool_choice, dict):
-        if tool_choice.get("type") != "function":
-            raise ValueError("tool_choice object must have type 'function'")
-        function = tool_choice.get("function")
-        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
-            raise ValueError("tool_choice.function.name must be a string")
-        name = function["name"]
-        selected = [tool for tool in tools if _tool_function(tool)["name"] == name]
-        if not selected:
-            raise ValueError(f"tool_choice selected unknown function: {name!r}")
-        return "function", selected
-    raise ValueError(
-        "tool_choice must be 'auto', 'none', 'required', or a function choice object"
-    )
-
-
-def _parse_structured_tool_calls(text, allowed_tools):
-    names = {_tool_function(tool)["name"] for tool in allowed_tools}
-    try:
-        parsed = json.loads(text.strip())
-    except json.JSONDecodeError as e:
-        raise ValueError(f"model did not return a valid JSON tool call: {e}") from e
-
-    if isinstance(parsed, dict):
-        parsed = [parsed]
-    if not isinstance(parsed, list) or not parsed:
-        raise ValueError("model tool-call JSON must be an object or non-empty list")
-
-    tool_calls = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            raise ValueError("each tool-call JSON item must be an object")
-        name = item.get("name")
-        arguments = item.get("arguments", {})
-        if not isinstance(name, str) or name not in names:
-            raise ValueError(f"model selected unknown function: {name!r}")
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except json.JSONDecodeError as e:
-                raise ValueError(
-                    f"function.arguments for {name!r} is not valid JSON: {e}"
-                ) from e
-        if not isinstance(arguments, dict):
-            raise ValueError(f"function.arguments for {name!r} must be an object")
-        tool_calls.append(
-            {
-                "id": f"call_{uuid.uuid4().hex}",
-                "name": name,
-                "arguments": arguments,
-            }
-        )
-    return tool_calls
 
 
 def convert_chat(messages: List[dict], role_mapping: Optional[dict] = None):
@@ -1406,43 +1270,18 @@ class APIHandler(BaseHTTPRequestHandler):
 
         self.tool_choice = self.body.get("tool_choice", "auto")
         self.structured_tool_tools = None
-        tools = self.body.get("tools")
-        if not tools and self.tool_choice not in (None, "auto", "none"):
+        try:
+            tools = validate_tools(self.body.get("tools"))
+            parsed_choice, selected_tools = resolve_tool_choice(
+                self.tool_choice, tools
+            )
+        except ValueError as e:
             self._set_completion_headers(400)
             self.end_headers()
-            self.wfile.write(
-                json.dumps(
-                    {"error": "tool_choice requires a non-empty 'tools' array"}
-                ).encode()
-            )
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
-        if tools is not None:
-            if not isinstance(tools, list):
-                self._set_completion_headers(400)
-                self.end_headers()
-                self.wfile.write(
-                    json.dumps({"error": "'tools' must be an array"}).encode()
-                )
-                return
-            try:
-                for tool in tools:
-                    _tool_function(tool)
-            except ValueError as e:
-                self._set_completion_headers(400)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
-                return
+        self.tool_choice = parsed_choice
         if tools:
-            try:
-                parsed_choice, selected_tools = _parse_tool_choice(
-                    self.tool_choice, tools
-                )
-            except ValueError as e:
-                self._set_completion_headers(400)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
-                return
-            self.tool_choice = parsed_choice
             if parsed_choice == "none":
                 self.body["tools"] = None
             elif selected_tools is not None:
@@ -1451,6 +1290,20 @@ class APIHandler(BaseHTTPRequestHandler):
 
         # Structured output constraint (response_format / guided_*)
         self.structured_constraint = None
+        if self.structured_tool_tools is not None and parse_request_constraint is None:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "error": (
+                            "tool_choice requiring a tool call requires "
+                            "mlx-lm[structured]"
+                        )
+                    }
+                ).encode()
+            )
+            return
         if parse_request_constraint is not None:
             try:
                 self.structured_constraint = parse_request_constraint(self.body)
@@ -1476,7 +1329,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     return
                 try:
                     self.structured_constraint = parse_request_constraint(
-                        {"guided_json": _tool_call_schema(self.structured_tool_tools)}
+                        {"guided_json": tool_call_schema(self.structured_tool_tools)}
                     )
                 except ValueError as e:
                     self._set_completion_headers(400)
@@ -1486,11 +1339,6 @@ class APIHandler(BaseHTTPRequestHandler):
         elif any(self.body.get(field) is not None for field in STRUCTURED_FIELDS):
             logging.warning(
                 "Structured output parameters were ignored: install "
-                "mlx-lm[structured] to enforce them"
-            )
-        elif self.structured_tool_tools is not None:
-            logging.warning(
-                "Structured tool-call constraints were ignored: install "
                 "mlx-lm[structured] to enforce them"
             )
 
@@ -1760,6 +1608,7 @@ class APIHandler(BaseHTTPRequestHandler):
             prompt (List[int]): The tokenized prompt.
             stop_words (List[str]): A list of stop words
         """
+        buffer_stream = self.stream and self.structured_tool_tools is not None
         args = GenerationArguments(
             model=ModelDescription(
                 model=self.requested_model,
@@ -1797,7 +1646,7 @@ class APIHandler(BaseHTTPRequestHandler):
         # the progress)
         def keepalive_callback(processed, total):
             logging.info(f"Prompt processing progress: {processed}/{total}")
-            if self.stream:
+            if self.stream and not buffer_stream:
                 msg = f": keepalive {processed}/{total}\n\n".encode()
                 self.wfile.write(msg)
                 self.wfile.flush()
@@ -1816,12 +1665,15 @@ class APIHandler(BaseHTTPRequestHandler):
             return
 
         # Prepare the headers
-        if self.stream:
+        stream_started = False
+        if self.stream and not buffer_stream:
             self._set_stream_headers(200)
             self.end_headers()
+            stream_started = True
             logging.debug("Starting stream:")
+        elif self.stream:
+            logging.debug("Starting buffered stream:")
         else:
-            self._set_completion_headers(200)
             logging.debug("Starting completion:")
 
         # Tool call formatter
@@ -1891,10 +1743,31 @@ class APIHandler(BaseHTTPRequestHandler):
                 tool_calls.append(tool_text)
                 made_tool_call = True
 
-            if self.structured_tool_tools is not None and text.strip():
-                parsed_tool_calls = _parse_structured_tool_calls(
-                    text, self.structured_tool_tools
-                )
+            if self.structured_tool_tools is not None:
+                if not text.strip():
+                    if not stream_started:
+                        self._set_completion_headers(400)
+                        self.end_headers()
+                        self.wfile.write(
+                            json.dumps(
+                                {"error": "model did not return a tool call"}
+                            ).encode()
+                        )
+                        self.wfile.flush()
+                        return
+                    raise ValueError("model did not return a tool call")
+                try:
+                    parsed_tool_calls = parse_structured_tool_calls(
+                        text, self.structured_tool_tools
+                    )
+                except ValueError as e:
+                    if not stream_started:
+                        self._set_completion_headers(400)
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"error": str(e)}).encode())
+                        self.wfile.flush()
+                        return
+                    raise
                 formatted_tool_calls = tool_formatter.format_parsed(parsed_tool_calls)
                 text = ""
                 made_tool_call = True
@@ -1903,6 +1776,10 @@ class APIHandler(BaseHTTPRequestHandler):
                 finish_reason = "tool_calls"
 
             if self.stream:
+                if not stream_started:
+                    self._set_stream_headers(200)
+                    self.end_headers()
+                    stream_started = True
                 resp = self.generate_response(
                     text,
                     finish_reason,
@@ -1950,6 +1827,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     logging.debug(f"Outgoing Response: {response_debug}")
 
                 response_json = json.dumps(resp).encode()
+                self._set_completion_headers(200)
                 self.send_header("Content-Length", str(len(response_json)))
                 self.end_headers()
                 self.wfile.write(response_json)
@@ -1997,14 +1875,7 @@ class APIHandler(BaseHTTPRequestHandler):
         self.object_type = "chat.completion.chunk" if self.stream else "chat.completion"
         messages = body["messages"]
         if self.structured_tool_tools is not None:
-            tool_names = ", ".join(
-                _tool_function(tool)["name"] for tool in self.structured_tool_tools
-            )
-            instruction = (
-                "You must call a function. Respond only with a JSON object matching "
-                '{"name": <function name>, "arguments": <JSON object>}. '
-                f"Choose one of: {tool_names}."
-            )
+            instruction = forced_tool_instruction(self.structured_tool_tools)
             messages = [{"role": "system", "content": instruction}] + messages
 
         return CompletionRequest(

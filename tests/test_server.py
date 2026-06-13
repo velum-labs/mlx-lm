@@ -10,14 +10,15 @@ import unittest
 import mlx.core as mx
 import requests
 
+import mlx_lm.server as server_module
 from mlx_lm.models.cache import KVCache
+from mlx_lm.openai_compat import tool_call_schema
 from mlx_lm.server import (
     APIHandler,
     LRUPromptCache,
     Response,
     ResponseGenerator,
     _process_control_tokens,
-    _tool_call_schema,
 )
 from mlx_lm.utils import load
 
@@ -353,7 +354,7 @@ class TestOpenAIToolCalling(unittest.TestCase):
         ]
 
     def test_tool_call_schema_constrains_selected_arguments(self):
-        schema = _tool_call_schema([self.TOOL])
+        schema = tool_call_schema([self.TOOL])
 
         self.assertEqual(schema["properties"]["name"], {"enum": ["get_weather"]})
         self.assertEqual(
@@ -462,6 +463,67 @@ class TestOpenAIToolCalling(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("non-empty 'tools' array", response.json()["error"])
+
+    def test_forced_tool_call_requires_structured_extra(self):
+        original = server_module.parse_request_constraint
+        server_module.parse_request_constraint = None
+        self.addCleanup(setattr, server_module, "parse_request_constraint", original)
+        port, _ = self._serve(self._tool_call_responses())
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/chat/completions",
+            json={
+                "model": "chat_model",
+                "messages": [{"role": "user", "content": "weather in paris?"}],
+                "tools": [self.TOOL],
+                "tool_choice": "required",
+                "max_tokens": 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("mlx-lm[structured]", response.json()["error"])
+
+    def test_invalid_forced_tool_json_returns_400(self):
+        port, _ = self._serve(
+            [Response("{", 10, "normal", None, 0.0, "stop", ())]
+        )
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/chat/completions",
+            json={
+                "model": "chat_model",
+                "messages": [{"role": "user", "content": "weather in paris?"}],
+                "tools": [self.TOOL],
+                "tool_choice": "required",
+                "max_tokens": 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("valid JSON tool call", response.json()["error"])
+
+    def test_invalid_forced_tool_json_stream_returns_400_before_sse(self):
+        port, _ = self._serve(
+            [Response("{", 10, "normal", None, 0.0, "stop", ())]
+        )
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/chat/completions",
+            stream=True,
+            json={
+                "model": "chat_model",
+                "messages": [{"role": "user", "content": "weather in paris?"}],
+                "tools": [self.TOOL],
+                "tool_choice": "required",
+                "stream": True,
+                "max_tokens": 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.headers["Content-Type"], "application/json")
+        self.assertIn("valid JSON tool call", response.json()["error"])
 
 
 class TestServer(unittest.TestCase):

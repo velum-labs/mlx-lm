@@ -133,8 +133,9 @@ when available and mean-pools the final token hidden states.
 - `tool_choice: "none"` suppresses tools for the request.
 - `tool_choice: "auto"` preserves the model/template-native tool-calling path.
 - `tool_choice: "required"` or a forced function choice enables structured
-  tool-call mode. With `mlx-lm[structured]` installed, generation is constrained
-  to a JSON object whose `arguments` match the selected tool's JSON Schema.
+  tool-call mode. This mode requires `mlx-lm[structured]`: generation is
+  constrained to a JSON object whose `arguments` match the selected tool's JSON
+  Schema.
 
 Non-streaming tool-call responses use OpenAI's shape:
 
@@ -157,7 +158,9 @@ Non-streaming tool-call responses use OpenAI's shape:
 
 Streaming responses emit SSE lines with `delta.tool_calls[].index`, a stable
 `id`, `function.name`, and `function.arguments`, then finish with
-`finish_reason: "tool_calls"` and `data: [DONE]`.
+`finish_reason: "tool_calls"` and `data: [DONE]`. Forced structured tool calls
+are validated before the SSE response starts, so malformed or truncated tool
+JSON returns HTTP 400 instead of a broken stream.
 
 Smoke test:
 

@@ -76,3 +76,70 @@ python -m unittest tests/test_structured.py -v
 The spec-parsing tests run anywhere; FSM/processor/server-hook tests skip
 unless `outlines-core` (the `structured` extra) plus `numpy` and `numba`
 (test-only, for the CPU kernel) are installed.
+
+## OpenAI-compatible structured tool calling
+
+`POST /v1/chat/completions` accepts OpenAI `tools` and `tool_choice`:
+
+- `tool_choice: "none"` suppresses tools for the request.
+- `tool_choice: "auto"` preserves the model/template-native tool-calling path.
+- `tool_choice: "required"` or a forced function choice enables structured
+  tool-call mode. This mode requires `mlx-lm[structured]`: generation is
+  constrained to a JSON object whose `arguments` match the selected tool's JSON
+  Schema.
+
+Non-streaming tool-call responses use OpenAI's shape:
+
+```json
+{
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [{
+        "id": "call_...",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}
+```
+
+Streaming responses emit SSE lines with `delta.tool_calls[].index`, a stable
+`id`, `function.name`, and `function.arguments`, then finish with
+`finish_reason: "tool_calls"` and `data: [DONE]`. Forced structured tool calls
+are validated before the SSE response starts, so malformed or truncated tool
+JSON returns HTTP 400 instead of a broken stream.
+
+Smoke test:
+
+```sh
+curl -N http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model":"default_model",
+    "stream":true,
+    "stream_options":{"include_usage":true},
+    "messages":[{"role":"user","content":"Weather in Paris?"}],
+    "tools":[{
+      "type":"function",
+      "function":{
+        "name":"get_weather",
+        "description":"Get weather",
+        "parameters":{
+          "type":"object",
+          "properties":{"city":{"type":"string"}},
+          "required":["city"],
+          "additionalProperties":false
+        }
+      }
+    }],
+    "tool_choice":{"type":"function","function":{"name":"get_weather"}}
+  }'
+```
+
+For the full server compatibility contract, including `/v1/embeddings`,
+streaming usage, supported fields, and rejected fields, see
+[`mlx_lm/SERVER.md`](mlx_lm/SERVER.md).

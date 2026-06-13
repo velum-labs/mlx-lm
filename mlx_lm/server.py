@@ -33,6 +33,14 @@ import mlx.core as mx
 from huggingface_hub import scan_cache_dir
 
 from ._version import __version__
+from .embeddings import (
+    EmbeddingError,
+    EmbeddingModelError,
+    EmbeddingModelUnavailableError,
+    EmbeddingNotConfiguredError,
+    EmbeddingProvider,
+    parse_embedding_request,
+)
 from .generate import (
     BatchGenerator,
     SequenceStateMachine,
@@ -41,6 +49,14 @@ from .generate import (
 from .models.cache import (
     LRUPromptCache,
     make_prompt_cache,
+)
+from .openai_compat import (
+    ToolCallFormatter,
+    forced_tool_instruction,
+    parse_structured_tool_calls,
+    resolve_tool_choice,
+    tool_call_schema,
+    validate_tools,
 )
 from .sample_utils import make_logits_processors, make_sampler
 from .utils import _parse_size, load, sharded_load
@@ -65,46 +81,6 @@ STRUCTURED_FIELDS = ("response_format", "guided_json", "guided_regex", "guided_c
 def get_system_fingerprint():
     gpu_arch = mx.device_info()["architecture"]
     return f"{__version__}-{mx.__version__}-{platform.platform()}-{gpu_arch}"
-
-
-class ToolCallFormatter:
-    def __init__(self, tool_parser, tools, streaming=False):
-        self._idx = 0
-        self._tool_parser = tool_parser
-        self._tools = tools
-        self._streaming = streaming
-
-    def _format(self, tc):
-        tc_id = tc.pop("id", None) or str(uuid.uuid4())
-        tc["arguments"] = json.dumps(tc["arguments"], ensure_ascii=False)
-        out = {
-            "function": tc,
-            "type": "function",
-            "id": tc_id,
-        }
-        if self._streaming:
-            out["index"] = self._idx
-            self._idx += 1
-        return out
-
-    def __call__(self, tool_calls):
-        if not tool_calls:
-            return []
-
-        result = []
-        for tool_text in tool_calls:
-            try:
-                parsed = self._tool_parser(tool_text, self._tools)
-            except (ValueError, json.JSONDecodeError) as e:
-                logging.warning(
-                    f"Failed to parse tool call ({type(e).__name__}: {e}) — "
-                    f"tool text was likely truncated mid-generation."
-                )
-                continue
-            if not isinstance(parsed, list):
-                parsed = [parsed]
-            result.extend(self._format(tc) for tc in parsed)
-        return result
 
 
 def convert_chat(messages: List[dict], role_mapping: Optional[dict] = None):
@@ -339,6 +315,18 @@ class ModelProvider:
         self._tokenizer_config = {"trust_remote_code": cli_args.trust_remote_code}
         if cli_args.chat_template:
             self._tokenizer_config["chat_template"] = cli_args.chat_template
+
+        self.embedding_provider = EmbeddingProvider(
+            model_id=getattr(cli_args, "embedding_model", None),
+            tokenizer_config=self._tokenizer_config,
+            trust_remote_code=cli_args.trust_remote_code,
+            is_distributed=self.is_distributed,
+            load_fn=load,
+        )
+
+    @property
+    def embedding_model_id(self):
+        return self.embedding_provider.model_id
 
     def _load(self, model_path, adapter_path=None, draft_model_path=None):
         if self.is_distributed and (
@@ -1090,6 +1078,9 @@ class ResponseGenerator:
 
         return ctx, _process_control_tokens(ctx, _inner())
 
+    def embed(self, inputs: List[str]) -> Tuple[List[List[float]], int]:
+        return self.model_provider.embedding_provider.embed(inputs)
+
     @property
     def cli_args(self):
         return self.model_provider.cli_args
@@ -1147,7 +1138,7 @@ class APIHandler(BaseHTTPRequestHandler):
             "/chat/completions": self.handle_chat_completions,
         }
 
-        if self.path not in request_factories:
+        if self.path not in request_factories and self.path != "/v1/embeddings":
             self._set_completion_headers(404)
             self.end_headers()
             self.wfile.write(b"Not Found")
@@ -1196,6 +1187,10 @@ class APIHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if self.path == "/v1/embeddings":
+            self.handle_embeddings_request()
+            return
+
         # Extract request parameters from the body
         self.stream = self.body.get("stream", False)
         self.stream_options = self.body.get("stream_options", None)
@@ -1229,10 +1224,50 @@ class APIHandler(BaseHTTPRequestHandler):
         self.top_logprobs = self.body.get("top_logprobs", -1)
         self.seed = self.body.get("seed", None)
         self.chat_template_kwargs = self.body.get("chat_template_kwargs")
-        self.validate_model_parameters()
+        try:
+            self.validate_model_parameters()
+        except ValueError as e:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
+        self.tool_choice = self.body.get("tool_choice", "auto")
+        self.structured_tool_tools = None
+        try:
+            tools = validate_tools(self.body.get("tools"))
+            parsed_choice, selected_tools = resolve_tool_choice(
+                self.tool_choice, tools
+            )
+        except ValueError as e:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+        self.tool_choice = parsed_choice
+        if tools:
+            if parsed_choice == "none":
+                self.body["tools"] = None
+            elif selected_tools is not None:
+                self.structured_tool_tools = selected_tools
+                self.body["tools"] = selected_tools
 
         # Structured output constraint (response_format / guided_*)
         self.structured_constraint = None
+        if self.structured_tool_tools is not None and parse_request_constraint is None:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "error": (
+                            "tool_choice requiring a tool call requires "
+                            "mlx-lm[structured]"
+                        )
+                    }
+                ).encode()
+            )
+            return
         if parse_request_constraint is not None:
             try:
                 self.structured_constraint = parse_request_constraint(self.body)
@@ -1241,6 +1276,30 @@ class APIHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
                 return
+            if self.structured_tool_tools is not None:
+                if self.structured_constraint is not None:
+                    self._set_completion_headers(400)
+                    self.end_headers()
+                    self.wfile.write(
+                        json.dumps(
+                            {
+                                "error": (
+                                    "tool_choice requiring a tool call cannot be "
+                                    "combined with response_format or guided_*"
+                                )
+                            }
+                        ).encode()
+                    )
+                    return
+                try:
+                    self.structured_constraint = parse_request_constraint(
+                        {"guided_json": tool_call_schema(self.structured_tool_tools)}
+                    )
+                except ValueError as e:
+                    self._set_completion_headers(400)
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": str(e)}).encode())
+                    return
         elif any(self.body.get(field) is not None for field in STRUCTURED_FIELDS):
             logging.warning(
                 "Structured output parameters were ignored: install "
@@ -1311,10 +1370,63 @@ class APIHandler(BaseHTTPRequestHandler):
             except ValueError:
                 raise ValueError("logit_bias must be a dict of int to float")
 
+    def handle_embeddings_request(self):
+        try:
+            request = parse_embedding_request(
+                self.body,
+                getattr(self.response_generator.cli_args, "embedding_model", None),
+            )
+        except EmbeddingModelUnavailableError as e:
+            self._set_completion_headers(404)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+        except EmbeddingError as e:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
+        try:
+            embeddings, prompt_tokens = self.response_generator.embed(request.inputs)
+        except EmbeddingNotConfiguredError as e:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+        except EmbeddingModelError as e:
+            self._set_completion_headers(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
+        response = {
+            "object": "list",
+            "data": [
+                {
+                    "object": "embedding",
+                    "index": index,
+                    "embedding": embedding,
+                }
+                for index, embedding in enumerate(embeddings)
+            ],
+            "model": request.model,
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": prompt_tokens,
+            },
+        }
+        response_json = json.dumps(response).encode()
+        self._set_completion_headers(200)
+        self.send_header("Content-Length", str(len(response_json)))
+        self.end_headers()
+        self.wfile.write(response_json)
+        self.wfile.flush()
+
     def generate_response(
         self,
         text: str,
-        finish_reason: Union[Literal["length", "stop"], None],
+        finish_reason: Union[Literal["length", "stop", "tool_calls"], None],
         prompt_token_count: Optional[int] = None,
         completion_token_count: Optional[int] = None,
         prompt_cache_count: Optional[int] = None,
@@ -1409,6 +1521,8 @@ class APIHandler(BaseHTTPRequestHandler):
             choice[key_name] = {"role": "assistant"}
             if text:
                 choice[key_name]["content"] = text
+            elif tool_calls and not self.stream:
+                choice[key_name]["content"] = None
             if reasoning_text:
                 choice[key_name]["reasoning"] = reasoning_text
             if tool_calls:
@@ -1428,6 +1542,7 @@ class APIHandler(BaseHTTPRequestHandler):
             prompt (List[int]): The tokenized prompt.
             stop_words (List[str]): A list of stop words
         """
+        buffer_stream = self.stream and self.structured_tool_tools is not None
         args = GenerationArguments(
             model=ModelDescription(
                 model=self.requested_model,
@@ -1465,7 +1580,7 @@ class APIHandler(BaseHTTPRequestHandler):
         # the progress)
         def keepalive_callback(processed, total):
             logging.info(f"Prompt processing progress: {processed}/{total}")
-            if self.stream:
+            if self.stream and not buffer_stream:
                 msg = f": keepalive {processed}/{total}\n\n".encode()
                 self.wfile.write(msg)
                 self.wfile.flush()
@@ -1484,12 +1599,15 @@ class APIHandler(BaseHTTPRequestHandler):
             return
 
         # Prepare the headers
-        if self.stream:
+        stream_started = False
+        if self.stream and not buffer_stream:
             self._set_stream_headers(200)
             self.end_headers()
+            stream_started = True
             logging.debug("Starting stream:")
+        elif self.stream:
+            logging.debug("Starting buffered stream:")
         else:
-            self._set_completion_headers(200)
             logging.debug("Starting completion:")
 
         # Tool call formatter
@@ -1502,6 +1620,7 @@ class APIHandler(BaseHTTPRequestHandler):
         made_tool_call = False
         tool_text = ""
         tool_calls = []
+        formatted_tool_calls = None
         text = ""
         tokens = []
         token_logprobs = []
@@ -1533,6 +1652,7 @@ class APIHandler(BaseHTTPRequestHandler):
 
                 if (
                     self.stream
+                    and self.structured_tool_tools is None
                     and gen.state != "tool"
                     and (text or tool_calls or reasoning_text)
                 ):
@@ -1557,21 +1677,58 @@ class APIHandler(BaseHTTPRequestHandler):
                 tool_calls.append(tool_text)
                 made_tool_call = True
 
+            if self.structured_tool_tools is not None:
+                if not text.strip():
+                    if not stream_started:
+                        self._set_completion_headers(400)
+                        self.end_headers()
+                        self.wfile.write(
+                            json.dumps(
+                                {"error": "model did not return a tool call"}
+                            ).encode()
+                        )
+                        self.wfile.flush()
+                        return
+                    raise ValueError("model did not return a tool call")
+                try:
+                    parsed_tool_calls = parse_structured_tool_calls(
+                        text, self.structured_tool_tools
+                    )
+                except ValueError as e:
+                    if not stream_started:
+                        self._set_completion_headers(400)
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"error": str(e)}).encode())
+                        self.wfile.flush()
+                        return
+                    raise
+                formatted_tool_calls = tool_formatter.format_parsed(parsed_tool_calls)
+                text = ""
+                made_tool_call = True
+
             if finish_reason == "stop" and made_tool_call:
                 finish_reason = "tool_calls"
 
             if self.stream:
+                if not stream_started:
+                    self._set_stream_headers(200)
+                    self.end_headers()
+                    stream_started = True
                 resp = self.generate_response(
                     text,
                     finish_reason,
-                    tool_calls=tool_formatter(tool_calls),
+                    tool_calls=(
+                        formatted_tool_calls
+                        if formatted_tool_calls is not None
+                        else tool_formatter(tool_calls)
+                    ),
                     reasoning_text=reasoning_text,
                 )
                 self.wfile.write(f"data: {json.dumps(resp)}\n\n".encode())
                 self.wfile.flush()
                 if (
-                    self.stream_options is not None
-                    and self.stream_options["include_usage"]
+                    isinstance(self.stream_options, dict)
+                    and self.stream_options.get("include_usage", False)
                 ):
                     resp = self.completion_usage_response(
                         len(ctx.prompt),
@@ -1593,13 +1750,18 @@ class APIHandler(BaseHTTPRequestHandler):
                     top_tokens=top_tokens,
                     tokens=tokens,
                     reasoning_text=reasoning_text,
-                    tool_calls=tool_formatter(tool_calls),
+                    tool_calls=(
+                        formatted_tool_calls
+                        if formatted_tool_calls is not None
+                        else tool_formatter(tool_calls)
+                    ),
                 )
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
                     response_debug = json.dumps(resp, indent="\t")
                     logging.debug(f"Outgoing Response: {response_debug}")
 
                 response_json = json.dumps(resp).encode()
+                self._set_completion_headers(200)
                 self.send_header("Content-Length", str(len(response_json)))
                 self.end_headers()
                 self.wfile.write(response_json)
@@ -1645,11 +1807,15 @@ class APIHandler(BaseHTTPRequestHandler):
         # Determine response type
         self.request_id = f"chatcmpl-{uuid.uuid4()}"
         self.object_type = "chat.completion.chunk" if self.stream else "chat.completion"
+        messages = body["messages"]
+        if self.structured_tool_tools is not None:
+            instruction = forced_tool_instruction(self.structured_tool_tools)
+            messages = [{"role": "system", "content": instruction}] + messages
 
         return CompletionRequest(
             "chat",
             "",
-            body["messages"],
+            messages,
             body.get("tools") or None,
             body.get("role_mapping"),
         )
@@ -1747,6 +1913,20 @@ class APIHandler(BaseHTTPRequestHandler):
                         "created": self.created,
                     }
                 )
+
+        embedding_model = getattr(
+            self.response_generator.cli_args, "embedding_model", None
+        )
+        if embedding_model is not None and all(
+            model["id"] != embedding_model for model in models
+        ):
+            models.append(
+                {
+                    "id": embedding_model,
+                    "object": "model",
+                    "created": self.created,
+                }
+            )
 
         response = {"object": "list", "data": models}
 
@@ -1939,6 +2119,12 @@ def main():
         "--pipeline",
         action="store_true",
         help="Use pipelining instead of tensor parallelism",
+    )
+    parser.add_argument(
+        "--embedding-model",
+        type=str,
+        default=None,
+        help="Optional MLX model to lazy-load for OpenAI-compatible /v1/embeddings",
     )
     args = parser.parse_args()
     if mx.metal.is_available():

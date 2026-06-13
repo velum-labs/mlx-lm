@@ -1389,10 +1389,17 @@ class GenerationBatch:
             for c in self.prompt_cache:
                 c.filter(keep)
         self.tokens = [self.tokens[idx] for idx in keep]
+        # Resize samplers/logits_processors even when none are set: leaving
+        # stale entries behind would misalign them with sequences appended by
+        # a later extend(), silently applying the wrong sampler/processors.
         if any(self.samplers):
             self.samplers = [self.samplers[idx] for idx in keep]
+        else:
+            self.samplers = [None] * len(keep)
         if any(self.logits_processors):
             self.logits_processors = [self.logits_processors[idx] for idx in keep]
+        else:
+            self.logits_processors = [[]] * len(keep)
         self.max_tokens = [self.max_tokens[idx] for idx in keep]
         self.state_machines = [self.state_machines[idx] for idx in keep]
 

@@ -28,13 +28,36 @@ try:
     from mlx_lm.structured.processor import StructuredLogitsProcessor
     from mlx_lm.structured.spec import ConstraintSpec
 
-    NUMPY_BACKEND = get_backend("numpy")
+    HAS_STRUCTURED = True
 except ImportError:
+    HAS_STRUCTURED = False
+
+try:
+    import mlx.core as mx
+
+    from mlx_lm.generate import BatchGenerator
+    from mlx_lm.models import llama
+
+    HAS_MLX = True
+except ImportError:
+    HAS_MLX = False
+
+if HAS_STRUCTURED:
+    try:
+        NUMPY_BACKEND = get_backend("numpy")
+    except ImportError:  # numba (test-only dependency) not installed
+        NUMPY_BACKEND = None
+else:
     NUMPY_BACKEND = None
 
 needs_backend = unittest.skipIf(
     NUMPY_BACKEND is None,
     "requires the structured extra (outlines-core) plus numpy and numba",
+)
+
+needs_mlx_structured = unittest.skipIf(
+    not (HAS_MLX and HAS_STRUCTURED),
+    "requires mlx and the structured extra (outlines-core)",
 )
 
 # A deliberately small vocabulary rich enough for small JSON documents and
@@ -400,6 +423,134 @@ class TestServerHooks(unittest.TestCase):
         args = self.make_args(spec)
         restored = pickle.loads(pickle.dumps(args))
         self.assertEqual(restored.logits.structured, spec)
+
+
+def _decode(tokens):
+    return "".join(
+        TOKEN_STRINGS[t] for t in tokens if t not in (EOS_ID, SECONDARY_EOS_ID)
+    )
+
+
+@needs_mlx_structured
+class TestBatchGeneratorConstraints(unittest.TestCase):
+    """Constraint enforcement on a long-lived BatchGenerator.
+
+    mlx_lm.server keeps one BatchGenerator alive across requests and inserts
+    new requests into it, so a constrained request must be fully enforced no
+    matter what ran on the generator before it. The plain-then-structured
+    cases are regressions for a bug in GenerationBatch.filter: when a batch
+    whose sequences had no logits processors drained, the stale processor
+    slots were left behind and misaligned the processors of sequences
+    inserted later, silently disabling their constraints.
+    """
+
+    SCHEMA = json.dumps(
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string", "maxLength": 2}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        mx.random.seed(7)
+        args = llama.ModelArgs(
+            model_type="llama",
+            hidden_size=32,
+            num_hidden_layers=2,
+            intermediate_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=8,
+            rms_norm_eps=1e-5,
+            vocab_size=VOCAB_SIZE,
+        )
+        cls.model = llama.Model(args)
+        cls.tokenizer = FakeTokenizer()
+        cls.index_cache = IndexCache()
+
+    def _generator(self):
+        return BatchGenerator(
+            self.model,
+            stop_tokens=[[EOS_ID], [SECONDARY_EOS_ID]],
+            max_tokens=24,
+        )
+
+    def _constraint(self, kind, payload):
+        spec = ConstraintSpec(kind=kind, payload=payload)
+        index, _, eos_ids = self.index_cache.index(("tiny", None), self.tokenizer, spec)
+        return StructuredLogitsProcessor(index, eos_ids)
+
+    def _run(self, gen, processors=None):
+        """Insert one request, run it to completion, return its tokens."""
+        kwargs = {}
+        if processors is not None:
+            kwargs["logits_processors"] = [processors]
+        (uid,) = gen.insert([list(PROMPT)], max_tokens=[24], **kwargs)
+        tokens = []
+        for _ in range(200):
+            responses = gen.next_generated()
+            self.assertTrue(responses, "generator stalled before request finished")
+            for r in responses:
+                self.assertEqual(r.uid, uid)
+                tokens.append(r.token)
+                if r.finish_reason is not None:
+                    return tokens
+        self.fail("request did not finish")
+
+    def assertMatchesRegexConstraint(self, tokens, text):
+        self.assertEqual(_decode(tokens), text)
+        self.assertIn(tokens[-1], (EOS_ID, SECONDARY_EOS_ID))
+
+    def test_structured_only(self):
+        gen = self._generator()
+        tokens = self._run(gen, [self._constraint("regex", "abc")])
+        self.assertMatchesRegexConstraint(tokens, "abc")
+
+    def test_plain_then_structured(self):
+        gen = self._generator()
+        self._run(gen)
+        tokens = self._run(gen, [self._constraint("regex", "abc")])
+        self.assertMatchesRegexConstraint(tokens, "abc")
+
+    def test_structured_then_plain(self):
+        gen = self._generator()
+        tokens = self._run(gen, [self._constraint("regex", "abc")])
+        self.assertMatchesRegexConstraint(tokens, "abc")
+        plain_tokens = self._run(gen)
+        self.assertTrue(plain_tokens)
+
+    def test_structured_then_structured_same_schema(self):
+        gen = self._generator()
+        for _ in range(2):
+            tokens = self._run(gen, [self._constraint("regex", "abc")])
+            self.assertMatchesRegexConstraint(tokens, "abc")
+
+    def test_structured_then_structured_different_schema(self):
+        gen = self._generator()
+        tokens = self._run(gen, [self._constraint("regex", "abc")])
+        self.assertMatchesRegexConstraint(tokens, "abc")
+        tokens = self._run(gen, [self._constraint("choice", '["ab","12"]')])
+        self.assertIn(_decode(tokens), ("ab", "12"))
+
+    def test_plain_then_structured_json_schema(self):
+        # The reported bug: after a plain request, a json_schema-constrained
+        # request emitted invalid JSON like '{The capital of France is
+        # Paris.}' because only the first token was constrained.
+        gen = self._generator()
+        self._run(gen)
+        tokens = self._run(gen, [self._constraint("json_schema", self.SCHEMA)])
+        decoded = _decode(tokens)
+        try:
+            document = json.loads(decoded)
+        except json.JSONDecodeError:
+            self.fail(f"constrained output is not valid JSON: {decoded!r}")
+        self.assertIsInstance(document, dict)
+        self.assertIn("name", document)
 
 
 if __name__ == "__main__":

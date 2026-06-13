@@ -15,6 +15,12 @@ The delta over the upstream tag is intentionally small and self-contained:
   carry the constraint on `LogitsProcessorArguments` (picklable, so it
   reaches every distributed rank), and append the constraint processor in
   `_make_logits_processors`.
+- `mlx_lm/generate.py` — one upstream bugfix in `GenerationBatch.filter`:
+  stale per-sequence sampler/logits-processor slots were left behind when a
+  batch with none set drained, misaligning the processors of sequences
+  inserted later. On the server this silently disabled the constraint of a
+  structured request that followed a plain request on the same
+  `BatchGenerator`.
 - `setup.py` — the `structured` extra (`outlines-core`, exact pin) and the
   new subpackage.
 

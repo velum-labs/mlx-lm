@@ -1,5 +1,6 @@
 # Copyright © 2024 Apple Inc.
 
+import itertools
 import random
 import unittest
 from typing import List
@@ -15,6 +16,7 @@ from mlx_lm.generate import (
     generate_step,
     stream_generate,
 )
+from mlx_lm.models import llama
 from mlx_lm.models.cache import KVCache, RotatingKVCache
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load
@@ -846,6 +848,76 @@ class TestGenerate(unittest.TestCase):
         )
         self.assertIsNone(response.logprobs)
         self.assertIsNone(response.token_ids)
+
+
+class TestBatchProcessorAlignment(unittest.TestCase):
+    """Per-sequence samplers/processors must stay aligned with sequences
+    across drain-and-refill cycles of a long-lived BatchGenerator.
+
+    Regression test: GenerationBatch.filter left stale sampler and
+    logits-processor slots behind when no sequence in the batch had any
+    (e.g. a fully unconstrained batch draining), so sequences inserted
+    afterwards read the stale slots and their processors were ignored.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        mx.random.seed(11)
+        args = llama.ModelArgs(
+            model_type="llama",
+            hidden_size=32,
+            num_hidden_layers=2,
+            intermediate_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=8,
+            rms_norm_eps=1e-5,
+            vocab_size=32,
+        )
+        cls.model = llama.Model(args)
+
+    def _run(self, gen, **kwargs):
+        (uid,) = gen.insert([[3, 4, 5]], max_tokens=[4], **kwargs)
+        tokens = []
+        while responses := gen.next_generated():
+            for r in responses:
+                self.assertEqual(r.uid, uid)
+                tokens.append(r.token)
+            if responses[-1].finish_reason is not None:
+                break
+        return tokens
+
+    def test_processors_apply_after_unprocessed_batch_drains(self):
+        gen = BatchGenerator(self.model, max_tokens=4)
+
+        # First request: no logits processors; run it to completion so the
+        # generation batch drains and is refilled by the next insert.
+        self._run(gen)
+
+        # Second request: a processor that forces a specific token sequence
+        # (varying per step, so a skipped processor call cannot be masked by
+        # the model coincidentally repeating the previous token). The batch
+        # pipelines one speculative step past the last emitted token, hence
+        # the cycle() instead of a plain iterator.
+        forced = [7, 9, 11, 13]
+        calls = itertools.cycle(forced)
+
+        def force_next(tokens, logits):
+            target = next(calls)
+            mask = mx.full(logits.shape, -float("inf"), dtype=logits.dtype)
+            return mx.where(mx.arange(logits.shape[-1]) == target, logits, mask)
+
+        tokens = self._run(gen, logits_processors=[[force_next]])
+        self.assertEqual(tokens, forced)
+
+    def test_samplers_apply_after_unsampled_batch_drains(self):
+        gen = BatchGenerator(self.model, max_tokens=4)
+        self._run(gen)
+
+        forced = [9, 11, 13, 15]
+        calls = itertools.cycle(forced)
+        tokens = self._run(gen, samplers=[lambda _: mx.array([next(calls)])])
+        self.assertEqual(tokens, forced)
 
 
 if __name__ == "__main__":

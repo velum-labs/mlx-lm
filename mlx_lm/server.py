@@ -1407,6 +1407,15 @@ class APIHandler(BaseHTTPRequestHandler):
         self.tool_choice = self.body.get("tool_choice", "auto")
         self.structured_tool_tools = None
         tools = self.body.get("tools")
+        if not tools and self.tool_choice not in (None, "auto", "none"):
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {"error": "tool_choice requires a non-empty 'tools' array"}
+                ).encode()
+            )
+            return
         if tools is not None:
             if not isinstance(tools, list):
                 self._set_completion_headers(400)
@@ -1560,6 +1569,27 @@ class APIHandler(BaseHTTPRequestHandler):
             )
             return
 
+        embedding_model = getattr(
+            self.response_generator.cli_args, "embedding_model", None
+        )
+        if embedding_model is not None and model not in (
+            embedding_model,
+            "default_model",
+        ):
+            self._set_completion_headers(404)
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "error": (
+                            f"Embedding model {model!r} is not available; "
+                            f"configured embedding model is {embedding_model!r}"
+                        )
+                    }
+                ).encode()
+            )
+            return
+
         inputs = body.get("input")
         if isinstance(inputs, str):
             input_list = [inputs]
@@ -1598,7 +1628,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 }
                 for index, embedding in enumerate(embeddings)
             ],
-            "model": model,
+            "model": embedding_model or model,
             "usage": {
                 "prompt_tokens": prompt_tokens,
                 "total_tokens": prompt_tokens,

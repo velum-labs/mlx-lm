@@ -246,8 +246,33 @@ class TestOpenAIEmbeddings(unittest.TestCase):
         self.assertEqual(body["usage"], {"prompt_tokens": 3, "total_tokens": 3})
         self.assertEqual([item["index"] for item in body["data"]], [0, 1])
         self.assertEqual(body["data"][0]["object"], "embedding")
-        self.assertTrue(all(isinstance(v, float) for v in body["data"][0]["embedding"]))
+        self.assertTrue(
+            all(isinstance(v, float) for v in body["data"][0]["embedding"])
+        )
         self.assertEqual(response_generator.inputs, ["hello world", "x"])
+
+    def test_embeddings_default_model_alias_reports_configured_model(self):
+        response_generator = FakeEmbeddingResponseGenerator()
+        port = self._serve(response_generator)
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/embeddings",
+            json={"model": "default_model", "input": "hello"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["model"], "embed-model")
+
+    def test_embeddings_rejects_unconfigured_model_id(self):
+        port = self._serve(FakeEmbeddingResponseGenerator())
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/embeddings",
+            json={"model": "other-model", "input": "hello"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("not available", response.json()["error"])
 
     def test_embeddings_without_configured_model_is_400(self):
         response_generator = FakeEmbeddingResponseGenerator(
@@ -421,6 +446,22 @@ class TestOpenAIToolCalling(unittest.TestCase):
         usage_chunks = [chunk for chunk in chunks if chunk.get("usage")]
         self.assertEqual(len(usage_chunks), 1)
         self.assertEqual(usage_chunks[0]["usage"]["completion_tokens"], 2)
+
+    def test_tool_choice_requires_tools(self):
+        port, _ = self._serve([])
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/chat/completions",
+            json={
+                "model": "chat_model",
+                "messages": [{"role": "user", "content": "weather in paris?"}],
+                "tool_choice": "required",
+                "max_tokens": 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("non-empty 'tools' array", response.json()["error"])
 
 
 class TestServer(unittest.TestCase):

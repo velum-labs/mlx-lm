@@ -74,18 +74,27 @@ class ToolCallFormatter:
         self._tools = tools
         self._streaming = streaming
 
-    def _format(self, tc):
-        tc_id = tc.pop("id", None) or str(uuid.uuid4())
-        tc["arguments"] = json.dumps(tc["arguments"], ensure_ascii=False)
+    def _format(self, tc, index=None):
+        tc_id = tc.get("id") or f"call_{uuid.uuid4().hex}"
+        arguments = tc.get("arguments", {})
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii=False)
         out = {
-            "function": tc,
+            "function": {
+                "name": tc["name"],
+                "arguments": arguments,
+            },
             "type": "function",
             "id": tc_id,
         }
         if self._streaming:
-            out["index"] = self._idx
-            self._idx += 1
+            out["index"] = self._idx if index is None else index
+            if index is None:
+                self._idx += 1
         return out
+
+    def format_parsed(self, tool_calls):
+        return [self._format(tc, index=i) for i, tc in enumerate(tool_calls)]
 
     def __call__(self, tool_calls):
         if not tool_calls:
@@ -105,6 +114,101 @@ class ToolCallFormatter:
                 parsed = [parsed]
             result.extend(self._format(tc) for tc in parsed)
         return result
+
+
+def _tool_function(tool):
+    if not isinstance(tool, dict) or tool.get("type") != "function":
+        raise ValueError("tools entries must be {'type': 'function', 'function': {...}}")
+    function = tool.get("function")
+    if not isinstance(function, dict):
+        raise ValueError("function tool entries must include a function object")
+    name = function.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("function tools require a non-empty function.name")
+    parameters = function.get("parameters") or {"type": "object"}
+    if not isinstance(parameters, dict):
+        raise ValueError("function.parameters must be a JSON Schema object")
+    return function
+
+
+def _tool_schema(tool):
+    function = _tool_function(tool)
+    return {
+        "type": "object",
+        "properties": {
+            "name": {"enum": [function["name"]]},
+            "arguments": function.get("parameters") or {"type": "object"},
+        },
+        "required": ["name", "arguments"],
+        "additionalProperties": False,
+    }
+
+
+def _tool_call_schema(tools):
+    schemas = [_tool_schema(tool) for tool in tools]
+    return schemas[0] if len(schemas) == 1 else {"oneOf": schemas}
+
+
+def _parse_tool_choice(tool_choice, tools):
+    if tool_choice is None:
+        tool_choice = "auto"
+    if tool_choice in ("auto", "none"):
+        return tool_choice, None
+    if tool_choice == "required":
+        return tool_choice, tools
+    if isinstance(tool_choice, dict):
+        if tool_choice.get("type") != "function":
+            raise ValueError("tool_choice object must have type 'function'")
+        function = tool_choice.get("function")
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            raise ValueError("tool_choice.function.name must be a string")
+        name = function["name"]
+        selected = [tool for tool in tools if _tool_function(tool)["name"] == name]
+        if not selected:
+            raise ValueError(f"tool_choice selected unknown function: {name!r}")
+        return "function", selected
+    raise ValueError(
+        "tool_choice must be 'auto', 'none', 'required', or a function choice object"
+    )
+
+
+def _parse_structured_tool_calls(text, allowed_tools):
+    names = {_tool_function(tool)["name"] for tool in allowed_tools}
+    try:
+        parsed = json.loads(text.strip())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"model did not return a valid JSON tool call: {e}") from e
+
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list) or not parsed:
+        raise ValueError("model tool-call JSON must be an object or non-empty list")
+
+    tool_calls = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise ValueError("each tool-call JSON item must be an object")
+        name = item.get("name")
+        arguments = item.get("arguments", {})
+        if not isinstance(name, str) or name not in names:
+            raise ValueError(f"model selected unknown function: {name!r}")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"function.arguments for {name!r} is not valid JSON: {e}"
+                ) from e
+        if not isinstance(arguments, dict):
+            raise ValueError(f"function.arguments for {name!r} must be an object")
+        tool_calls.append(
+            {
+                "id": f"call_{uuid.uuid4().hex}",
+                "name": name,
+                "arguments": arguments,
+            }
+        )
+    return tool_calls
 
 
 def convert_chat(messages: List[dict], role_mapping: Optional[dict] = None):
@@ -317,6 +421,9 @@ class ModelProvider:
         self.tokenizer = None
         self.draft_model = None
         self.is_batchable = False
+        self.embedding_model_key = None
+        self.embedding_model = None
+        self.embedding_tokenizer = None
 
         group = mx.distributed.init()
         self.pipeline_group = group if group.size() > 1 and cli_args.pipeline else None
@@ -339,6 +446,59 @@ class ModelProvider:
         self._tokenizer_config = {"trust_remote_code": cli_args.trust_remote_code}
         if cli_args.chat_template:
             self._tokenizer_config["chat_template"] = cli_args.chat_template
+
+    @property
+    def embedding_model_id(self):
+        return getattr(self.cli_args, "embedding_model", None)
+
+    def _load_embedding_model(self):
+        embedding_model = self.embedding_model_id
+        if not embedding_model:
+            raise ValueError(
+                "No embedding model configured; start the server with "
+                "--embedding-model <hf-id-or-path> to enable /v1/embeddings"
+            )
+        if self.is_distributed:
+            raise ValueError("/v1/embeddings is not supported in distributed mode")
+
+        if self.embedding_model_key != embedding_model:
+            model, tokenizer = load(
+                embedding_model,
+                tokenizer_config=self._tokenizer_config,
+                trust_remote_code=self.cli_args.trust_remote_code,
+            )
+            self.embedding_model_key = embedding_model
+            self.embedding_model = model
+            self.embedding_tokenizer = tokenizer
+        return self.embedding_model, self.embedding_tokenizer
+
+    def embed(self, inputs: List[str]) -> Tuple[List[List[float]], int]:
+        model, tokenizer = self._load_embedding_model()
+        embeddings = []
+        total_tokens = 0
+
+        for text in inputs:
+            tokens = tokenizer.encode(text, add_special_tokens=True)
+            if not tokens:
+                if tokenizer.eos_token_id is None:
+                    raise ValueError("embedding tokenizer produced no tokens")
+                tokens = [tokenizer.eos_token_id]
+            total_tokens += len(tokens)
+
+            input_ids = mx.array([tokens])
+            encoder = getattr(model, "model", model)
+            hidden = encoder(input_ids)
+            if isinstance(hidden, tuple):
+                hidden = hidden[0]
+            if len(hidden.shape) != 3:
+                raise ValueError(
+                    "embedding model did not return token hidden states; use an MLX "
+                    "model whose inner model returns hidden states"
+                )
+            pooled = mx.mean(hidden.astype(mx.float32), axis=1)[0]
+            embeddings.append(pooled.tolist())
+
+        return embeddings, total_tokens
 
     def _load(self, model_path, adapter_path=None, draft_model_path=None):
         if self.is_distributed and (
@@ -1090,6 +1250,9 @@ class ResponseGenerator:
 
         return ctx, _process_control_tokens(ctx, _inner())
 
+    def embed(self, inputs: List[str]) -> Tuple[List[List[float]], int]:
+        return self.model_provider.embed(inputs)
+
     @property
     def cli_args(self):
         return self.model_provider.cli_args
@@ -1147,7 +1310,7 @@ class APIHandler(BaseHTTPRequestHandler):
             "/chat/completions": self.handle_chat_completions,
         }
 
-        if self.path not in request_factories:
+        if self.path not in request_factories and self.path != "/v1/embeddings":
             self._set_completion_headers(404)
             self.end_headers()
             self.wfile.write(b"Not Found")
@@ -1196,6 +1359,10 @@ class APIHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if self.path == "/v1/embeddings":
+            self.handle_embeddings_request()
+            return
+
         # Extract request parameters from the body
         self.stream = self.body.get("stream", False)
         self.stream_options = self.body.get("stream_options", None)
@@ -1229,7 +1396,49 @@ class APIHandler(BaseHTTPRequestHandler):
         self.top_logprobs = self.body.get("top_logprobs", -1)
         self.seed = self.body.get("seed", None)
         self.chat_template_kwargs = self.body.get("chat_template_kwargs")
-        self.validate_model_parameters()
+        try:
+            self.validate_model_parameters()
+        except ValueError as e:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
+        self.tool_choice = self.body.get("tool_choice", "auto")
+        self.structured_tool_tools = None
+        tools = self.body.get("tools")
+        if tools is not None:
+            if not isinstance(tools, list):
+                self._set_completion_headers(400)
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps({"error": "'tools' must be an array"}).encode()
+                )
+                return
+            try:
+                for tool in tools:
+                    _tool_function(tool)
+            except ValueError as e:
+                self._set_completion_headers(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+                return
+        if tools:
+            try:
+                parsed_choice, selected_tools = _parse_tool_choice(
+                    self.tool_choice, tools
+                )
+            except ValueError as e:
+                self._set_completion_headers(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+                return
+            self.tool_choice = parsed_choice
+            if parsed_choice == "none":
+                self.body["tools"] = None
+            elif selected_tools is not None:
+                self.structured_tool_tools = selected_tools
+                self.body["tools"] = selected_tools
 
         # Structured output constraint (response_format / guided_*)
         self.structured_constraint = None
@@ -1241,9 +1450,38 @@ class APIHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
                 return
+            if self.structured_tool_tools is not None:
+                if self.structured_constraint is not None:
+                    self._set_completion_headers(400)
+                    self.end_headers()
+                    self.wfile.write(
+                        json.dumps(
+                            {
+                                "error": (
+                                    "tool_choice requiring a tool call cannot be "
+                                    "combined with response_format or guided_*"
+                                )
+                            }
+                        ).encode()
+                    )
+                    return
+                try:
+                    self.structured_constraint = parse_request_constraint(
+                        {"guided_json": _tool_call_schema(self.structured_tool_tools)}
+                    )
+                except ValueError as e:
+                    self._set_completion_headers(400)
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": str(e)}).encode())
+                    return
         elif any(self.body.get(field) is not None for field in STRUCTURED_FIELDS):
             logging.warning(
                 "Structured output parameters were ignored: install "
+                "mlx-lm[structured] to enforce them"
+            )
+        elif self.structured_tool_tools is not None:
+            logging.warning(
+                "Structured tool-call constraints were ignored: install "
                 "mlx-lm[structured] to enforce them"
             )
 
@@ -1311,10 +1549,72 @@ class APIHandler(BaseHTTPRequestHandler):
             except ValueError:
                 raise ValueError("logit_bias must be a dict of int to float")
 
+    def handle_embeddings_request(self):
+        body = self.body
+        model = body.get("model")
+        if not isinstance(model, str) or not model:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(
+                json.dumps({"error": "'model' must be a non-empty string"}).encode()
+            )
+            return
+
+        inputs = body.get("input")
+        if isinstance(inputs, str):
+            input_list = [inputs]
+        elif isinstance(inputs, list) and all(isinstance(item, str) for item in inputs):
+            input_list = inputs
+        else:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {"error": "'input' must be a string or an array of strings"}
+                ).encode()
+            )
+            return
+
+        try:
+            embeddings, prompt_tokens = self.response_generator.embed(input_list)
+        except ValueError as e:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+        except Exception as e:
+            self._set_completion_headers(404)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
+        response = {
+            "object": "list",
+            "data": [
+                {
+                    "object": "embedding",
+                    "index": index,
+                    "embedding": embedding,
+                }
+                for index, embedding in enumerate(embeddings)
+            ],
+            "model": model,
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": prompt_tokens,
+            },
+        }
+        response_json = json.dumps(response).encode()
+        self._set_completion_headers(200)
+        self.send_header("Content-Length", str(len(response_json)))
+        self.end_headers()
+        self.wfile.write(response_json)
+        self.wfile.flush()
+
     def generate_response(
         self,
         text: str,
-        finish_reason: Union[Literal["length", "stop"], None],
+        finish_reason: Union[Literal["length", "stop", "tool_calls"], None],
         prompt_token_count: Optional[int] = None,
         completion_token_count: Optional[int] = None,
         prompt_cache_count: Optional[int] = None,
@@ -1409,6 +1709,8 @@ class APIHandler(BaseHTTPRequestHandler):
             choice[key_name] = {"role": "assistant"}
             if text:
                 choice[key_name]["content"] = text
+            elif tool_calls and not self.stream:
+                choice[key_name]["content"] = None
             if reasoning_text:
                 choice[key_name]["reasoning"] = reasoning_text
             if tool_calls:
@@ -1502,6 +1804,7 @@ class APIHandler(BaseHTTPRequestHandler):
         made_tool_call = False
         tool_text = ""
         tool_calls = []
+        formatted_tool_calls = None
         text = ""
         tokens = []
         token_logprobs = []
@@ -1533,6 +1836,7 @@ class APIHandler(BaseHTTPRequestHandler):
 
                 if (
                     self.stream
+                    and self.structured_tool_tools is None
                     and gen.state != "tool"
                     and (text or tool_calls or reasoning_text)
                 ):
@@ -1557,6 +1861,14 @@ class APIHandler(BaseHTTPRequestHandler):
                 tool_calls.append(tool_text)
                 made_tool_call = True
 
+            if self.structured_tool_tools is not None and text.strip():
+                parsed_tool_calls = _parse_structured_tool_calls(
+                    text, self.structured_tool_tools
+                )
+                formatted_tool_calls = tool_formatter.format_parsed(parsed_tool_calls)
+                text = ""
+                made_tool_call = True
+
             if finish_reason == "stop" and made_tool_call:
                 finish_reason = "tool_calls"
 
@@ -1564,14 +1876,18 @@ class APIHandler(BaseHTTPRequestHandler):
                 resp = self.generate_response(
                     text,
                     finish_reason,
-                    tool_calls=tool_formatter(tool_calls),
+                    tool_calls=(
+                        formatted_tool_calls
+                        if formatted_tool_calls is not None
+                        else tool_formatter(tool_calls)
+                    ),
                     reasoning_text=reasoning_text,
                 )
                 self.wfile.write(f"data: {json.dumps(resp)}\n\n".encode())
                 self.wfile.flush()
                 if (
-                    self.stream_options is not None
-                    and self.stream_options["include_usage"]
+                    isinstance(self.stream_options, dict)
+                    and self.stream_options.get("include_usage", False)
                 ):
                     resp = self.completion_usage_response(
                         len(ctx.prompt),
@@ -1593,7 +1909,11 @@ class APIHandler(BaseHTTPRequestHandler):
                     top_tokens=top_tokens,
                     tokens=tokens,
                     reasoning_text=reasoning_text,
-                    tool_calls=tool_formatter(tool_calls),
+                    tool_calls=(
+                        formatted_tool_calls
+                        if formatted_tool_calls is not None
+                        else tool_formatter(tool_calls)
+                    ),
                 )
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
                     response_debug = json.dumps(resp, indent="\t")
@@ -1645,11 +1965,22 @@ class APIHandler(BaseHTTPRequestHandler):
         # Determine response type
         self.request_id = f"chatcmpl-{uuid.uuid4()}"
         self.object_type = "chat.completion.chunk" if self.stream else "chat.completion"
+        messages = body["messages"]
+        if self.structured_tool_tools is not None:
+            tool_names = ", ".join(
+                _tool_function(tool)["name"] for tool in self.structured_tool_tools
+            )
+            instruction = (
+                "You must call a function. Respond only with a JSON object matching "
+                '{"name": <function name>, "arguments": <JSON object>}. '
+                f"Choose one of: {tool_names}."
+            )
+            messages = [{"role": "system", "content": instruction}] + messages
 
         return CompletionRequest(
             "chat",
             "",
-            body["messages"],
+            messages,
             body.get("tools") or None,
             body.get("role_mapping"),
         )
@@ -1747,6 +2078,20 @@ class APIHandler(BaseHTTPRequestHandler):
                         "created": self.created,
                     }
                 )
+
+        embedding_model = getattr(
+            self.response_generator.cli_args, "embedding_model", None
+        )
+        if embedding_model is not None and all(
+            model["id"] != embedding_model for model in models
+        ):
+            models.append(
+                {
+                    "id": embedding_model,
+                    "object": "model",
+                    "created": self.created,
+                }
+            )
 
         response = {"object": "list", "data": models}
 
@@ -1939,6 +2284,12 @@ def main():
         "--pipeline",
         action="store_true",
         help="Use pipelining instead of tensor parallelism",
+    )
+    parser.add_argument(
+        "--embedding-model",
+        type=str,
+        default=None,
+        help="Optional MLX model to lazy-load for OpenAI-compatible /v1/embeddings",
     )
     args = parser.parse_args()
     if mx.metal.is_available():

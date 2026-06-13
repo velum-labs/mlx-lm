@@ -17,6 +17,7 @@ from mlx_lm.server import (
     Response,
     ResponseGenerator,
     _process_control_tokens,
+    _tool_call_schema,
 )
 from mlx_lm.utils import load
 
@@ -70,6 +71,64 @@ class DummyModelProvider:
 
     def load_default(self):
         return self.load("default_model", None, "default_model")
+
+
+class FakeContext:
+    def __init__(self):
+        self.tool_parser = None
+        self.prompt = [1, 2, 3]
+        self.prompt_cache_count = -1
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
+class FakeChatResponseGenerator:
+    def __init__(self, responses):
+        self.responses = responses
+        self.last_request = None
+        self.last_args = None
+        self.context = FakeContext()
+        self.cli_args = types.SimpleNamespace(
+            allowed_origins=["*"],
+            num_draft_tokens=3,
+            temp=0.0,
+            top_p=1.0,
+            top_k=0,
+            min_p=0.0,
+            max_tokens=512,
+            model=None,
+            embedding_model=None,
+        )
+
+    def generate(self, request, generation_args, progress_callback=None):
+        self.last_request = request
+        self.last_args = generation_args
+        return self.context, iter(self.responses)
+
+
+class FakeEmbeddingResponseGenerator:
+    def __init__(self, embedding_model="embed-model", fail=False):
+        self.inputs = None
+        self.fail = fail
+        self.cli_args = types.SimpleNamespace(
+            allowed_origins=["*"],
+            model=None,
+            embedding_model=embedding_model,
+        )
+
+    def embed(self, inputs):
+        self.inputs = inputs
+        if self.fail:
+            raise ValueError(
+                "No embedding model configured; start the server with --embedding-model"
+            )
+        embeddings = [
+            [float(index), float(index + 1), float(len(text))]
+            for index, text in enumerate(inputs)
+        ]
+        return embeddings, sum(max(1, len(text.split())) for text in inputs)
 
 
 class MockCache:
@@ -155,6 +214,213 @@ class TestProcessControlTokens(unittest.TestCase):
             [t.state for t in out],
             ["tool", "tool", "tool", "normal", "normal"],
         )
+
+
+class TestOpenAIEmbeddings(unittest.TestCase):
+    def _serve(self, response_generator):
+        httpd = http.server.HTTPServer(
+            ("localhost", 0),
+            lambda *args, **kwargs: APIHandler(response_generator, *args, **kwargs),
+        )
+        thread = threading.Thread(target=httpd.serve_forever)
+        thread.daemon = True
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return httpd.server_port
+
+    def test_embeddings_shape_and_usage(self):
+        response_generator = FakeEmbeddingResponseGenerator()
+        port = self._serve(response_generator)
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/embeddings",
+            json={"model": "embed-model", "input": ["hello world", "x"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["object"], "list")
+        self.assertEqual(body["model"], "embed-model")
+        self.assertEqual(body["usage"], {"prompt_tokens": 3, "total_tokens": 3})
+        self.assertEqual([item["index"] for item in body["data"]], [0, 1])
+        self.assertEqual(body["data"][0]["object"], "embedding")
+        self.assertTrue(all(isinstance(v, float) for v in body["data"][0]["embedding"]))
+        self.assertEqual(response_generator.inputs, ["hello world", "x"])
+
+    def test_embeddings_without_configured_model_is_400(self):
+        response_generator = FakeEmbeddingResponseGenerator(
+            embedding_model=None, fail=True
+        )
+        port = self._serve(response_generator)
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/embeddings",
+            json={"model": "embed-model", "input": "hello"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("No embedding model configured", response.json()["error"])
+
+    def test_models_lists_configured_embedding_model(self):
+        port = self._serve(FakeEmbeddingResponseGenerator())
+
+        response = requests.get(f"http://localhost:{port}/v1/models")
+
+        self.assertEqual(response.status_code, 200)
+        model_ids = {model["id"] for model in response.json()["data"]}
+        self.assertIn("embed-model", model_ids)
+
+
+class TestOpenAIToolCalling(unittest.TestCase):
+    TOOL = {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string"},
+                    "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+                },
+                "required": ["city", "unit"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+    def _serve(self, responses):
+        response_generator = FakeChatResponseGenerator(responses)
+        httpd = http.server.HTTPServer(
+            ("localhost", 0),
+            lambda *args, **kwargs: APIHandler(response_generator, *args, **kwargs),
+        )
+        thread = threading.Thread(target=httpd.serve_forever)
+        thread.daemon = True
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return httpd.server_port, response_generator
+
+    def _tool_call_responses(self):
+        return [
+            Response(
+                '{"name":"get_weather","arguments":',
+                10,
+                "normal",
+                None,
+                0.0,
+                None,
+                (),
+            ),
+            Response(
+                '{"city":"Paris","unit":"celsius"}}',
+                11,
+                "normal",
+                None,
+                0.0,
+                "stop",
+                (),
+            ),
+        ]
+
+    def test_tool_call_schema_constrains_selected_arguments(self):
+        schema = _tool_call_schema([self.TOOL])
+
+        self.assertEqual(schema["properties"]["name"], {"enum": ["get_weather"]})
+        self.assertEqual(
+            schema["properties"]["arguments"],
+            self.TOOL["function"]["parameters"],
+        )
+        self.assertFalse(schema["additionalProperties"])
+
+    def test_forced_tool_call_non_stream(self):
+        port, response_generator = self._serve(self._tool_call_responses())
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/chat/completions",
+            json={
+                "model": "chat_model",
+                "messages": [{"role": "user", "content": "weather in paris?"}],
+                "tools": [self.TOOL],
+                "tool_choice": {
+                    "type": "function",
+                    "function": {"name": "get_weather"},
+                },
+                "max_tokens": 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        choice = body["choices"][0]
+        self.assertEqual(choice["finish_reason"], "tool_calls")
+        self.assertIsNone(choice["message"]["content"])
+        tool_call = choice["message"]["tool_calls"][0]
+        self.assertEqual(tool_call["type"], "function")
+        self.assertTrue(tool_call["id"].startswith("call_"))
+        self.assertEqual(tool_call["function"]["name"], "get_weather")
+        self.assertEqual(
+            json.loads(tool_call["function"]["arguments"]),
+            {"city": "Paris", "unit": "celsius"},
+        )
+        self.assertEqual(body["usage"]["completion_tokens"], 2)
+        self.assertIn(
+            "You must call a function",
+            response_generator.last_request.messages[0]["content"],
+        )
+
+    def test_forced_tool_call_stream(self):
+        port, _ = self._serve(self._tool_call_responses())
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/chat/completions",
+            stream=True,
+            json={
+                "model": "chat_model",
+                "messages": [{"role": "user", "content": "weather in paris?"}],
+                "tools": [self.TOOL],
+                "tool_choice": "required",
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "max_tokens": 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        chunks = []
+        for line in response.iter_lines():
+            if not line:
+                continue
+            data = line.decode("utf-8")
+            if data == "data: [DONE]" or not data.startswith("data: "):
+                continue
+            chunks.append(json.loads(data[6:]))
+
+        tool_chunks = [
+            chunk
+            for chunk in chunks
+            if chunk["choices"]
+            and chunk["choices"][0]["delta"].get("tool_calls")
+        ]
+        self.assertEqual(len(tool_chunks), 1)
+        choice = tool_chunks[0]["choices"][0]
+        self.assertEqual(choice["finish_reason"], "tool_calls")
+        tool_call = choice["delta"]["tool_calls"][0]
+        self.assertEqual(tool_call["index"], 0)
+        self.assertTrue(tool_call["id"].startswith("call_"))
+        self.assertEqual(tool_call["function"]["name"], "get_weather")
+        self.assertEqual(
+            json.loads(tool_call["function"]["arguments"]),
+            {"city": "Paris", "unit": "celsius"},
+        )
+
+        usage_chunks = [chunk for chunk in chunks if chunk.get("usage")]
+        self.assertEqual(len(usage_chunks), 1)
+        self.assertEqual(usage_chunks[0]["usage"]["completion_tokens"], 2)
 
 
 class TestServer(unittest.TestCase):

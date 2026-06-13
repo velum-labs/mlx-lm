@@ -140,6 +140,88 @@ curl localhost:8080/v1/chat/completions \
     - `completion_tokens`: The number of tokens generated.
     - `total_tokens`: The total number of tokens, i.e. the sum of the above two fields.
 
+### OpenAI Chat Compatibility
+
+The server accepts OpenAI-style `tools` and `tool_choice` on
+`/v1/chat/completions`:
+
+- `tools`: An optional array of function tools shaped as
+  `{"type": "function", "function": {...}}`.
+- `tool_choice: "none"`: Do not use tools for this request.
+- `tool_choice: "auto"` or omitted: Preserve the model and chat-template native
+  behavior.
+- `tool_choice: "required"`: Force the model to return a tool call using one of
+  the provided tools.
+- `tool_choice: {"type": "function", "function": {"name": "..."}}`: Force a
+  specific function tool.
+
+Forced tool choice requires installing `mlx-lm[structured]`. In forced mode the
+server constrains generation to a JSON tool-call object whose `arguments` match
+the selected function's JSON Schema. Invalid generated tool JSON returns HTTP
+400 before a streaming response starts.
+
+Non-streaming forced tool responses set `choices[0].message.content` to `null`,
+populate `choices[0].message.tool_calls`, and use
+`finish_reason: "tool_calls"`. Streaming forced tool responses emit
+`choices[0].delta.tool_calls` with a stable `index`, `id`,
+`function.name`, and JSON-string `function.arguments`, then finish with
+`finish_reason: "tool_calls"`.
+
+For streamed chat completions, `stream_options: {"include_usage": true}` emits
+one final chunk before `[DONE]` with an empty `choices` array and a populated
+`usage` object.
+
+### Embeddings
+
+Start the server with a separate embedding model to enable
+`POST /v1/embeddings`:
+
+```shell
+mlx_lm.server \
+  --model mlx-community/Mistral-7B-Instruct-v0.3-4bit \
+  --embedding-model mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ
+```
+
+The embedding model is lazy-loaded on the first embeddings request and is held
+separately from the chat model. Embedding inference runs under a dedicated lock,
+so concurrent HTTP requests cannot race during lazy loading or reuse the same
+MLX model instance unsafely.
+
+Supported request fields:
+
+- `model`: Required. Must be the configured `--embedding-model` value or
+  `default_model`.
+- `input`: Required. A string or an array of strings.
+- `encoding_format`: Optional. Only `"float"` is supported.
+
+Explicitly rejected request shapes:
+
+- Token-array inputs such as `[1, 2, 3]` or nested token arrays.
+- Empty input arrays.
+- `encoding_format` values other than `"float"`, including `"base64"`.
+- `dimensions`, because this server does not truncate or project embeddings.
+- Any other embedding request field not listed above.
+
+The response uses the OpenAI embeddings shape:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.0]}
+  ],
+  "model": "<configured-embedding-model>",
+  "usage": {"prompt_tokens": 1, "total_tokens": 1}
+}
+```
+
+Embeddings require an embedding-suitable model that is also supported by
+`mlx_lm`'s model registry. For example, Qwen embedding models work through the
+same MLX loader, while BERT-style sentence-transformer repos are not supported
+unless their model type is implemented in `mlx_lm`. The provider accepts either
+pooled embedding output or token hidden states. Token hidden states are pooled
+with an attention-mask mean and L2-normalized before being returned.
+
 ### List Models
 
 Use the `v1/models` endpoint to list available models:
@@ -153,3 +235,5 @@ list contains the following fields:
 
 - `id`: The Hugging Face repo id.
 - `created`: A time-stamp representing the model creation time.
+
+When `--embedding-model` is configured, `v1/models` also lists that model id.

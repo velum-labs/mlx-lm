@@ -11,6 +11,7 @@ import mlx.core as mx
 import requests
 
 import mlx_lm.server as server_module
+from mlx_lm.embeddings import EmbeddingNotConfiguredError
 from mlx_lm.models.cache import KVCache
 from mlx_lm.openai_compat import tool_call_schema
 from mlx_lm.server import (
@@ -122,7 +123,7 @@ class FakeEmbeddingResponseGenerator:
     def embed(self, inputs):
         self.inputs = inputs
         if self.fail:
-            raise ValueError(
+            raise EmbeddingNotConfiguredError(
                 "No embedding model configured; start the server with --embedding-model"
             )
         embeddings = [
@@ -288,6 +289,22 @@ class TestOpenAIEmbeddings(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("No embedding model configured", response.json()["error"])
+
+    def test_embeddings_reject_unsupported_fields(self):
+        port = self._serve(FakeEmbeddingResponseGenerator())
+
+        for extra in (
+            {"dimensions": 128},
+            {"encoding_format": "base64"},
+            {"input": [1, 2, 3]},
+        ):
+            with self.subTest(extra=extra):
+                response = requests.post(
+                    f"http://localhost:{port}/v1/embeddings",
+                    json={"model": "embed-model", "input": "hello", **extra},
+                )
+
+                self.assertEqual(response.status_code, 400)
 
     def test_models_lists_configured_embedding_model(self):
         port = self._serve(FakeEmbeddingResponseGenerator())

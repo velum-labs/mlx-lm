@@ -77,56 +77,7 @@ The spec-parsing tests run anywhere; FSM/processor/server-hook tests skip
 unless `outlines-core` (the `structured` extra) plus `numpy` and `numba`
 (test-only, for the CPU kernel) are installed.
 
-## OpenAI-compatible server additions
-
-This fork keeps the stock launch contract intact:
-
-```sh
-python -m mlx_lm server --model mlx-community/Qwen2.5-0.5B-Instruct-4bit --host 127.0.0.1 --port 8080
-```
-
-The additions are opt-in and additive.
-
-### Embeddings
-
-Start the chat server with a separate embedding model:
-
-```sh
-python -m mlx_lm server \
-  --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
-  --embedding-model mlx-community/Qwen2.5-0.5B-Instruct-4bit
-```
-
-`POST /v1/embeddings` accepts OpenAI's string or string-array input shape:
-
-```sh
-curl -s http://127.0.0.1:8080/v1/embeddings \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"mlx-community/Qwen2.5-0.5B-Instruct-4bit","input":["hello","world"]}'
-```
-
-The response is:
-
-```json
-{
-  "object": "list",
-  "data": [
-    {"object": "embedding", "index": 0, "embedding": [0.0]}
-  ],
-  "model": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
-  "usage": {"prompt_tokens": 2, "total_tokens": 2}
-}
-```
-
-The embedding model is lazy-loaded on the first embeddings request and is held
-separately from the chat model. If `--embedding-model` is omitted,
-`/v1/embeddings` returns HTTP 400 with a clear error instead of affecting chat
-routes. `GET /v1/models` includes the configured embedding model id.
-
-The embedding implementation uses the configured MLX model's inner transformer
-when available and mean-pools the final token hidden states.
-
-### Tool Calling
+## OpenAI-compatible structured tool calling
 
 `POST /v1/chat/completions` accepts OpenAI `tools` and `tool_choice`:
 
@@ -189,19 +140,6 @@ curl -N http://127.0.0.1:8080/v1/chat/completions \
   }'
 ```
 
-### Streaming Usage
-
-For streamed chat completions, pass:
-
-```json
-{"stream": true, "stream_options": {"include_usage": true}}
-```
-
-The server emits a final chunk before `[DONE]` with:
-
-```json
-{"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
-```
-
-This matches the fields consumed by OpenAI-compatible clients such as the AI SDK
-OpenAI-compatible provider.
+For the full server compatibility contract, including `/v1/embeddings`,
+streaming usage, supported fields, and rejected fields, see
+[`mlx_lm/SERVER.md`](mlx_lm/SERVER.md).

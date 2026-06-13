@@ -33,6 +33,14 @@ import mlx.core as mx
 from huggingface_hub import scan_cache_dir
 
 from ._version import __version__
+from .embeddings import (
+    EmbeddingError,
+    EmbeddingModelError,
+    EmbeddingModelUnavailableError,
+    EmbeddingNotConfiguredError,
+    EmbeddingProvider,
+    parse_embedding_request,
+)
 from .generate import (
     BatchGenerator,
     SequenceStateMachine,
@@ -285,9 +293,6 @@ class ModelProvider:
         self.tokenizer = None
         self.draft_model = None
         self.is_batchable = False
-        self.embedding_model_key = None
-        self.embedding_model = None
-        self.embedding_tokenizer = None
 
         group = mx.distributed.init()
         self.pipeline_group = group if group.size() > 1 and cli_args.pipeline else None
@@ -311,58 +316,17 @@ class ModelProvider:
         if cli_args.chat_template:
             self._tokenizer_config["chat_template"] = cli_args.chat_template
 
+        self.embedding_provider = EmbeddingProvider(
+            model_id=getattr(cli_args, "embedding_model", None),
+            tokenizer_config=self._tokenizer_config,
+            trust_remote_code=cli_args.trust_remote_code,
+            is_distributed=self.is_distributed,
+            load_fn=load,
+        )
+
     @property
     def embedding_model_id(self):
-        return getattr(self.cli_args, "embedding_model", None)
-
-    def _load_embedding_model(self):
-        embedding_model = self.embedding_model_id
-        if not embedding_model:
-            raise ValueError(
-                "No embedding model configured; start the server with "
-                "--embedding-model <hf-id-or-path> to enable /v1/embeddings"
-            )
-        if self.is_distributed:
-            raise ValueError("/v1/embeddings is not supported in distributed mode")
-
-        if self.embedding_model_key != embedding_model:
-            model, tokenizer = load(
-                embedding_model,
-                tokenizer_config=self._tokenizer_config,
-                trust_remote_code=self.cli_args.trust_remote_code,
-            )
-            self.embedding_model_key = embedding_model
-            self.embedding_model = model
-            self.embedding_tokenizer = tokenizer
-        return self.embedding_model, self.embedding_tokenizer
-
-    def embed(self, inputs: List[str]) -> Tuple[List[List[float]], int]:
-        model, tokenizer = self._load_embedding_model()
-        embeddings = []
-        total_tokens = 0
-
-        for text in inputs:
-            tokens = tokenizer.encode(text, add_special_tokens=True)
-            if not tokens:
-                if tokenizer.eos_token_id is None:
-                    raise ValueError("embedding tokenizer produced no tokens")
-                tokens = [tokenizer.eos_token_id]
-            total_tokens += len(tokens)
-
-            input_ids = mx.array([tokens])
-            encoder = getattr(model, "model", model)
-            hidden = encoder(input_ids)
-            if isinstance(hidden, tuple):
-                hidden = hidden[0]
-            if len(hidden.shape) != 3:
-                raise ValueError(
-                    "embedding model did not return token hidden states; use an MLX "
-                    "model whose inner model returns hidden states"
-                )
-            pooled = mx.mean(hidden.astype(mx.float32), axis=1)[0]
-            embeddings.append(pooled.tolist())
-
-        return embeddings, total_tokens
+        return self.embedding_provider.model_id
 
     def _load(self, model_path, adapter_path=None, draft_model_path=None):
         if self.is_distributed and (
@@ -1115,7 +1079,7 @@ class ResponseGenerator:
         return ctx, _process_control_tokens(ctx, _inner())
 
     def embed(self, inputs: List[str]) -> Tuple[List[List[float]], int]:
-        return self.model_provider.embed(inputs)
+        return self.model_provider.embedding_provider.embed(inputs)
 
     @property
     def cli_args(self):
@@ -1407,61 +1371,31 @@ class APIHandler(BaseHTTPRequestHandler):
                 raise ValueError("logit_bias must be a dict of int to float")
 
     def handle_embeddings_request(self):
-        body = self.body
-        model = body.get("model")
-        if not isinstance(model, str) or not model:
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(
-                json.dumps({"error": "'model' must be a non-empty string"}).encode()
+        try:
+            request = parse_embedding_request(
+                self.body,
+                getattr(self.response_generator.cli_args, "embedding_model", None),
             )
-            return
-
-        embedding_model = getattr(
-            self.response_generator.cli_args, "embedding_model", None
-        )
-        if embedding_model is not None and model not in (
-            embedding_model,
-            "default_model",
-        ):
+        except EmbeddingModelUnavailableError as e:
             self._set_completion_headers(404)
             self.end_headers()
-            self.wfile.write(
-                json.dumps(
-                    {
-                        "error": (
-                            f"Embedding model {model!r} is not available; "
-                            f"configured embedding model is {embedding_model!r}"
-                        )
-                    }
-                ).encode()
-            )
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
-
-        inputs = body.get("input")
-        if isinstance(inputs, str):
-            input_list = [inputs]
-        elif isinstance(inputs, list) and all(isinstance(item, str) for item in inputs):
-            input_list = inputs
-        else:
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(
-                json.dumps(
-                    {"error": "'input' must be a string or an array of strings"}
-                ).encode()
-            )
-            return
-
-        try:
-            embeddings, prompt_tokens = self.response_generator.embed(input_list)
-        except ValueError as e:
+        except EmbeddingError as e:
             self._set_completion_headers(400)
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
-        except Exception as e:
-            self._set_completion_headers(404)
+
+        try:
+            embeddings, prompt_tokens = self.response_generator.embed(request.inputs)
+        except EmbeddingNotConfiguredError as e:
+            self._set_completion_headers(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+        except EmbeddingModelError as e:
+            self._set_completion_headers(500)
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
@@ -1476,7 +1410,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 }
                 for index, embedding in enumerate(embeddings)
             ],
-            "model": embedding_model or model,
+            "model": request.model,
             "usage": {
                 "prompt_tokens": prompt_tokens,
                 "total_tokens": prompt_tokens,

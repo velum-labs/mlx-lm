@@ -1,23 +1,62 @@
 # Copyright © 2025 Apple Inc.
 
 import json
-from typing import Any, Optional
+from typing import Any, Iterator, Optional, Tuple
 
 import re
 
 # Matches <|"|>...<|"|> string literals (Gemma 4's string delimiter).
 _GEMMA4_STR = r'<\|"\|>(?:(?!<\|"\|>)[\s\S])*?<\|"\|>'
+_GEMMA4_STR_DELIMITER = '<|"|>'
 
-# Matches call:name{...} with balanced braces via the regex module's
-# recursive (?R)-style support.  The inner alternatives handle:
-#   [^{}<]          – any char that is not a brace or start of <|"|>
-#   <(?!\|"\|>)     – a lone '<' that is NOT the start of <|"|>
-#   <|"|>...<|"|>   – a complete string literal (braces inside are ignored)
-#   (?2)            – recursively balanced nested brace group
-_tool_call_regex = re.compile(
-    r"call:([\w-]+)(\{(?:[^{}<]|<(?!\|\"\|>)|" + _GEMMA4_STR + r"|(?2))*\})",
-    re.DOTALL,
-)
+
+def _find_tool_calls(text: str) -> Iterator[Tuple[str, str]]:
+    pos = 0
+    while True:
+        call_start = text.find("call:", pos)
+        if call_start < 0:
+            return
+        name_start = call_start + len("call:")
+        name_end = name_start
+        while name_end < len(text) and _is_name_char(text[name_end]):
+            name_end += 1
+        if name_end == name_start or name_end >= len(text) or text[name_end] != "{":
+            pos = name_start
+            continue
+        args_start = name_end
+        args_end = _find_balanced_args_end(text, args_start)
+        if args_end is None:
+            return
+        yield text[name_start:name_end], text[args_start : args_end + 1]
+        pos = args_end + 1
+
+
+def _is_name_char(char: str) -> bool:
+    return char.isalnum() or char in {"_", "-"}
+
+
+def _find_balanced_args_end(text: str, start: int) -> Optional[int]:
+    depth = 0
+    pos = start
+    while pos < len(text):
+        if text.startswith(_GEMMA4_STR_DELIMITER, pos):
+            string_end = text.find(
+                _GEMMA4_STR_DELIMITER,
+                pos + len(_GEMMA4_STR_DELIMITER),
+            )
+            if string_end < 0:
+                return None
+            pos = string_end + len(_GEMMA4_STR_DELIMITER)
+            continue
+        char = text[pos]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return pos
+        pos += 1
+    return None
 
 
 def _gemma4_args_to_json(text: str) -> str:
@@ -43,22 +82,20 @@ def _gemma4_args_to_json(text: str) -> str:
     return text
 
 
-def _parse_single(match: re.Match) -> dict:
-    """Parse a single call:name{args} regex match into a tool call dict."""
-    func_name = match.group(1)
-    args_str = match.group(2)
+def _parse_single(func_name: str, args_str: str) -> dict:
+    """Parse a single call:name{args} match into a tool call dict."""
     json_str = _gemma4_args_to_json(args_str)
     arguments = json.loads(json_str)
     return dict(name=func_name, arguments=arguments)
 
 
 def parse_tool_call(text: str, _: Optional[Any] = None):
-    matches = list(_tool_call_regex.finditer(text))
+    matches = list(_find_tool_calls(text))
     if not matches:
         raise ValueError("No function provided.")
     if len(matches) == 1:
-        return _parse_single(matches[0])
-    return [_parse_single(m) for m in matches]
+        return _parse_single(*matches[0])
+    return [_parse_single(*m) for m in matches]
 
 
 tool_call_start = "<|tool_call>"

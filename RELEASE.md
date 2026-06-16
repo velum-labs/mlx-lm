@@ -64,8 +64,7 @@ Before building and publishing, the workflow:
 1. compiles the import-safe release modules;
 2. runs the non-MLX import-safe test suite;
 3. validates release metadata with `scripts/validate_velum_release.py`;
-4. builds wheel and sdist artifacts with `python -m build`; and
-5. checks distributions with `twine check`.
+4. builds wheel and sdist artifacts with `python -m build`.
 
 The validation script checks:
 

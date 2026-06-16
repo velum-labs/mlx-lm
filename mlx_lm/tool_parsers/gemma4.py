@@ -3,7 +3,7 @@
 import json
 from typing import Any, Optional
 
-import regex as re
+import re
 
 # Matches <|"|>...<|"|> string literals (Gemma 4's string delimiter).
 _GEMMA4_STR = r'<\|"\|>(?:(?!<\|"\|>)[\s\S])*?<\|"\|>'

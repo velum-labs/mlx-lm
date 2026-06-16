@@ -58,8 +58,16 @@ print(
             "schema": response["schema"],
             "tool_calls": response["capabilities"]["tool_calls"],
             "parsed_tool": parsed_tool_call["name"],
-            "idl_source": model_fusion_protocol.MODEL_FUSION_IDL_SOURCE_OF_TRUTH,
+            "contract_source": (
+                model_fusion_protocol.MODEL_FUSION_CONTRACT_SOURCE_OF_TRUTH
+            ),
+            "durable_records": model_fusion_protocol.MODEL_FUSION_DURABLE_RECORD_FORMAT,
+            "http_api": model_fusion_protocol.MODEL_FUSION_HTTP_API_FORMAT,
             "openapi_status": model_fusion_protocol.MODEL_FUSION_OPENAPI_STATUS,
+            "protobuf_status": model_fusion_protocol.MODEL_FUSION_PROTOBUF_BUF_STATUS,
+            "protobuf_required": (
+                model_fusion_protocol.MODEL_FUSION_PROTOBUF_BUF_REQUIRED_FOR_V1
+            ),
             "schema_purpose": model_fusion_protocol.MODEL_FUSION_SCHEMA_BUNDLE_PURPOSE,
             "typescript_package": model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_PACKAGE,
             "python_import": model_fusion_protocol.MODEL_FUSION_PYTHON_IMPORT_NAME,
@@ -88,8 +96,12 @@ print(
         self.assertEqual(output["schema"], "model_endpoint.v1")
         self.assertEqual(output["tool_calls"], "degraded")
         self.assertEqual(output["parsed_tool"], "search")
-        self.assertEqual(output["idl_source"], "protobuf_buf")
-        self.assertEqual(output["openapi_status"], "generated")
+        self.assertEqual(output["contract_source"], "json_schema_openapi_3_1")
+        self.assertEqual(output["durable_records"], "json_schema")
+        self.assertEqual(output["http_api"], "openapi_3_1")
+        self.assertEqual(output["openapi_status"], "v1_source_of_truth")
+        self.assertEqual(output["protobuf_status"], "experimental_future")
+        self.assertIs(output["protobuf_required"], False)
         self.assertEqual(output["schema_purpose"], "persisted_audit_benchmark_records")
         self.assertEqual(output["typescript_package"], "@velum/model-fusion-protocol")
         self.assertEqual(output["python_import"], "velum_model_fusion_protocol")

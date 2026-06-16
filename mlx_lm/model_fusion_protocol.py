@@ -1,7 +1,7 @@
-"""Pinned model-fusion protocol artifact metadata.
+"""Pinned model-fusion protocol contract metadata.
 
-The contract and IDL source of truth lives in fusionkit. This module is an
-import-safe consumer shim for mlx-lm until the generated Python package is
+The v1 JSON Schema/OpenAPI source of truth lives in fusionkit. This module is
+an import-safe consumer shim for mlx-lm until the generated Python package is
 available from a private package index.
 """
 
@@ -25,13 +25,27 @@ def load_model_fusion_protocol_lock() -> Dict[str, Any]:
 
 MODEL_FUSION_PROTOCOL_LOCK = load_model_fusion_protocol_lock()
 MODEL_FUSION_CANONICAL_SPEC = MODEL_FUSION_PROTOCOL_LOCK["canonical_spec"]
-MODEL_FUSION_IDL_SOURCE_OF_TRUTH = MODEL_FUSION_PROTOCOL_LOCK["idl"][
+MODEL_FUSION_CONTRACT_SOURCE_OF_TRUTH = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"][
     "source_of_truth"
 ]
-MODEL_FUSION_OPENAPI_STATUS = MODEL_FUSION_PROTOCOL_LOCK["idl"]["openapi"]["status"]
-MODEL_FUSION_OPENAPI_HAND_AUTHORED = MODEL_FUSION_PROTOCOL_LOCK["idl"]["openapi"][
-    "hand_authored"
+MODEL_FUSION_DURABLE_RECORD_FORMAT = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"][
+    "durable_records"
 ]
+MODEL_FUSION_HTTP_API_FORMAT = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"][
+    "http_service_apis"
+]
+MODEL_FUSION_OPENAPI_STATUS = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"]["openapi"][
+    "status"
+]
+MODEL_FUSION_OPENAPI_VERSION = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"]["openapi"][
+    "version"
+]
+MODEL_FUSION_PROTOBUF_BUF_STATUS = MODEL_FUSION_PROTOCOL_LOCK["future_transports"][
+    "protobuf_buf"
+]["status"]
+MODEL_FUSION_PROTOBUF_BUF_REQUIRED_FOR_V1 = MODEL_FUSION_PROTOCOL_LOCK[
+    "future_transports"
+]["protobuf_buf"]["required_for_v1"]
 MODEL_FUSION_SCHEMA_BUNDLE_HASH = MODEL_FUSION_PROTOCOL_LOCK["schema_bundle"]["hash"]
 MODEL_FUSION_SCHEMA_BUNDLE_PURPOSE = MODEL_FUSION_PROTOCOL_LOCK["schema_bundle"][
     "purpose"

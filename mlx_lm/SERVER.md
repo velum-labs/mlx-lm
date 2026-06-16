@@ -259,8 +259,9 @@ limits such as context length, memory estimate, and quantization are reported as
 `mlx-lm` consumes the fusionkit-origin model-fusion protocol rather than owning
 the contract. The current artifact pin lives in
 `mlx_lm/model_fusion_protocol.lock.json`; see
-[`MODEL_FUSION_PROTOCOL.md`](MODEL_FUSION_PROTOCOL.md) for the intended
-protobuf/Buf IDL, generated TypeScript/Python package paths, and drift checks.
+[`MODEL_FUSION_PROTOCOL.md`](MODEL_FUSION_PROTOCOL.md) for the v1 JSON
+Schema/OpenAPI contract path, generated TypeScript/Python package paths, and
+drift checks.
 Until generated Python bindings are available from a private package index,
 `mlx_lm.openai_compat` keeps local, dependency-free validation helpers for the
 `model_endpoint.v1` and `model-call-record.v1` provider fixtures. These helpers

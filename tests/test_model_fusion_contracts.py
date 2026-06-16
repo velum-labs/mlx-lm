@@ -33,12 +33,28 @@ class TestModelFusionContractFixtures(unittest.TestCase):
         )
         self.assertEqual(lock["origin"]["repo"], "velum-labs/fusionkit")
         self.assertEqual(
-            model_fusion_protocol.MODEL_FUSION_IDL_SOURCE_OF_TRUTH,
-            "protobuf_buf",
+            model_fusion_protocol.MODEL_FUSION_CONTRACT_SOURCE_OF_TRUTH,
+            "json_schema_openapi_3_1",
         )
-        self.assertEqual(model_fusion_protocol.MODEL_FUSION_OPENAPI_STATUS, "generated")
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_DURABLE_RECORD_FORMAT,
+            "json_schema",
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_HTTP_API_FORMAT,
+            "openapi_3_1",
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_OPENAPI_STATUS,
+            "v1_source_of_truth",
+        )
+        self.assertEqual(model_fusion_protocol.MODEL_FUSION_OPENAPI_VERSION, "3.1")
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_PROTOBUF_BUF_STATUS,
+            "experimental_future",
+        )
         self.assertIs(
-            model_fusion_protocol.MODEL_FUSION_OPENAPI_HAND_AUTHORED,
+            model_fusion_protocol.MODEL_FUSION_PROTOBUF_BUF_REQUIRED_FOR_V1,
             False,
         )
         self.assertEqual(

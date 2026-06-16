@@ -4,17 +4,27 @@
   "origin": {
     "repo": "velum-labs/fusionkit",
     "contract_path": "contracts/model-fusion",
-    "proto_path": "proto/velum/model_fusion/v1",
-    "buf_module": "buf.build/velum/model-fusion"
+    "openapi_path": "openapi/model-fusion.v1.yaml"
   },
-  "idl": {
-    "source_of_truth": "protobuf_buf",
-    "sdk_boundaries": "protobuf_buf",
-    "service_boundaries": "protobuf_buf",
+  "v1_contracts": {
+    "durable_records": "json_schema",
+    "http_service_apis": "openapi_3_1",
+    "sdk_generation": [
+      "json_schema",
+      "openapi_3_1"
+    ],
+    "source_of_truth": "json_schema_openapi_3_1",
     "openapi": {
-      "status": "generated",
-      "source": "protobuf_buf",
-      "hand_authored": false
+      "version": "3.1",
+      "status": "v1_source_of_truth",
+      "source": "fusionkit_contract_bundle"
+    }
+  },
+  "future_transports": {
+    "protobuf_buf": {
+      "status": "experimental_future",
+      "purpose": "internal streaming, Connect, or gRPC if service boundaries harden",
+      "required_for_v1": false
     }
   },
   "schema_bundle": {

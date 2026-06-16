@@ -6,22 +6,27 @@ import json
 import threading
 import types
 import unittest
+from unittest.mock import Mock
 
-import mlx.core as mx
-import requests
+try:
+    import mlx.core as mx
+except ImportError as e:
+    raise unittest.SkipTest(f"mlx is required for server integration tests: {e}")
+else:
+    import requests
 
-import mlx_lm.server as server_module
-from mlx_lm.embeddings import EmbeddingNotConfiguredError
-from mlx_lm.models.cache import KVCache
-from mlx_lm.openai_compat import tool_call_schema, validate_model_endpoint_fixture
-from mlx_lm.server import (
-    APIHandler,
-    LRUPromptCache,
-    Response,
-    ResponseGenerator,
-    _process_control_tokens,
-)
-from mlx_lm.utils import load
+    import mlx_lm.server as server_module
+    from mlx_lm.embeddings import EmbeddingNotConfiguredError
+    from mlx_lm.models.cache import KVCache
+    from mlx_lm.openai_compat import tool_call_schema, validate_model_endpoint_fixture
+    from mlx_lm.server import (
+        APIHandler,
+        LRUPromptCache,
+        Response,
+        ResponseGenerator,
+        _process_control_tokens,
+    )
+    from mlx_lm.utils import load
 
 
 class DummyModelProvider:
@@ -1010,7 +1015,6 @@ class TestServerWithDraftModel(unittest.TestCase):
 class TestKeepalive(unittest.TestCase):
     def test_keepalive_callback(self):
         """Test keepalive callback sends SSE comments and handles errors"""
-        from unittest.mock import Mock
 
         # Mock handler
         mock_wfile = io.BytesIO()

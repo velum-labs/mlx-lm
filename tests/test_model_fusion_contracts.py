@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "model-fusion-contract"
 OPENAI_COMPAT_PATH = REPO_ROOT / "mlx_lm" / "openai_compat.py"
+SERVER_METADATA_PATH = REPO_ROOT / "mlx_lm" / "server_metadata.py"
 
 OPENAI_COMPAT_SPEC = importlib.util.spec_from_file_location(
     "mlx_lm_openai_compat_for_tests",
@@ -90,8 +91,8 @@ class TestModelFusionContractFixtures(unittest.TestCase):
             validate_model_call_record_fixture(extra_message_field)
 
     def test_server_endpoint_fixture_helper_validates_output(self):
-        server_module = self._load_server_module()
-        record = server_module.make_model_endpoint_fixture(
+        server_metadata = self._load_server_metadata_module()
+        record = server_metadata.make_model_endpoint_fixture(
             "mlx-local-test",
             "mlx-community/Test-Model-4bit",
             base_url="http://127.0.0.1:8080",
@@ -109,6 +110,24 @@ class TestModelFusionContractFixtures(unittest.TestCase):
         self.assertEqual(record["schema_bundle_hash"], MODEL_FUSION_SCHEMA_BUNDLE_HASH)
         self.assertEqual(record["base_url"], "http://127.0.0.1:8080")
         validate_model_endpoint_fixture(record)
+
+    def test_server_capabilities_response_helper_validates_endpoint(self):
+        server_metadata = self._load_server_metadata_module()
+        response = server_metadata.make_capabilities_response(
+            model="mlx-community/Test-Model-4bit",
+            base_url="http://127.0.0.1:8080",
+            structured_output_available=True,
+            embedding_model=None,
+            max_output_tokens=128,
+        )
+
+        self.assertEqual(response["object"], "capabilities")
+        self.assertEqual(response["schema"], "model_endpoint.v1")
+        self.assertEqual(response["capabilities"]["tool_calls"], "supported")
+        self.assertEqual(response["capabilities"]["embeddings"], "unsupported")
+        self.assertEqual(response["endpoints"]["/v1/embeddings"], "unsupported")
+        self.assertEqual(response["limits"]["max_output_tokens"], 128)
+        validate_model_endpoint_fixture(response["endpoint"])
 
     def test_benchmark_model_call_fixture_helper_validates_output(self):
         server_benchmark = self._load_server_benchmark_module()
@@ -280,12 +299,30 @@ class TestModelFusionContractFixtures(unittest.TestCase):
         )
         validate_model_call_record_fixture(record)
 
-    def _load_server_module(self):
+    def _load_server_metadata_module(self):
+        spec = importlib.util.spec_from_file_location(
+            "mlx_lm.server_metadata",
+            SERVER_METADATA_PATH,
+        )
+        module = importlib.util.module_from_spec(spec)
+        previous_package = sys.modules.get("mlx_lm")
+        previous_openai_compat = sys.modules.get("mlx_lm.openai_compat")
+        mlx_lm_package = types.ModuleType("mlx_lm")
+        mlx_lm_package.__path__ = [str(REPO_ROOT / "mlx_lm")]
+        sys.modules["mlx_lm"] = mlx_lm_package
+        sys.modules["mlx_lm.openai_compat"] = openai_compat
         try:
-            importlib.import_module("mlx_lm.server")
-        except ImportError as e:
-            self.skipTest(f"server dependencies are not installed: {e}")
-        return sys.modules["mlx_lm.server"]
+            spec.loader.exec_module(module)
+        finally:
+            if previous_package is None:
+                sys.modules.pop("mlx_lm", None)
+            else:
+                sys.modules["mlx_lm"] = previous_package
+            if previous_openai_compat is None:
+                sys.modules.pop("mlx_lm.openai_compat", None)
+            else:
+                sys.modules["mlx_lm.openai_compat"] = previous_openai_compat
+        return module
 
     def _load_server_benchmark_module(self):
         spec = importlib.util.spec_from_file_location(

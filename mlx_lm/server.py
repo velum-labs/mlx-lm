@@ -1,7 +1,6 @@
 # Copyright © 2023-2024 Apple Inc.
 
 import argparse
-import datetime
 import json
 import logging
 import pickle
@@ -52,16 +51,23 @@ from .models.cache import (
     make_prompt_cache,
 )
 from .openai_compat import (
-    MODEL_FUSION_SCHEMA_BUNDLE_HASH,
     ToolCallFormatter,
     forced_tool_instruction,
-    validate_model_endpoint_fixture,
     parse_structured_tool_calls,
     resolve_tool_choice,
     tool_call_schema,
     validate_tools,
 )
 from .sample_utils import make_logits_processors, make_sampler
+from .server_metadata import (
+    loaded_model_status,
+    make_capabilities_response,
+    make_endpoint_support,
+    make_health_response,
+    make_model_endpoint_fixture,
+    make_server_capabilities,
+    resolve_model_id,
+)
 from .utils import _parse_size, load, sharded_load
 
 # Optional structured decoding support (see mlx_lm/structured). When the
@@ -85,59 +91,6 @@ VELUM_MODEL_CALL_ID_HEADER = "x-velum-model-call-id"
 def get_system_fingerprint():
     gpu_arch = mx.device_info()["architecture"]
     return f"{__version__}-{mx.__version__}-{platform.platform()}-{gpu_arch}"
-
-
-def make_model_endpoint_fixture(
-    endpoint_id: str,
-    model: str,
-    *,
-    base_url: Optional[str] = None,
-    owner: str = "mlx-lm",
-    provider: str = "mlx-lm",
-    api_compatibility: str = "mlx-lm-server",
-    capabilities: Optional[Dict[str, str]] = None,
-    status: str = "succeeded",
-    created_at: Optional[str] = None,
-    producer_git_sha: str = "0" * 40,
-    max_context_tokens: Optional[int] = None,
-    estimated_memory_gb: Optional[float] = None,
-    tags: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """Build and validate a local provider contract endpoint fixture."""
-    timestamp = created_at or (
-        datetime.datetime.now(datetime.timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
-    record: Dict[str, Any] = {
-        "schema": "model_endpoint.v1",
-        "schema_version": "v1",
-        "schema_bundle_hash": MODEL_FUSION_SCHEMA_BUNDLE_HASH,
-        "producer": "mlx-lm",
-        "producer_version": __version__,
-        "producer_git_sha": producer_git_sha,
-        "created_at": timestamp,
-        "endpoint_id": endpoint_id,
-        "owner": owner,
-        "provider": provider,
-        "model": model,
-        "api_compatibility": api_compatibility,
-        "capabilities": (
-            capabilities if capabilities is not None else {"chat_completions": "supported"}
-        ),
-        "status": status,
-    }
-    if base_url is not None:
-        record["base_url"] = base_url
-    if max_context_tokens is not None:
-        record["max_context_tokens"] = max_context_tokens
-    if estimated_memory_gb is not None:
-        record["estimated_memory_gb"] = estimated_memory_gb
-    if tags is not None:
-        record["tags"] = tags
-
-    validate_model_endpoint_fixture(record)
-    return record
 
 
 def convert_chat(messages: List[dict], role_mapping: Optional[dict] = None):
@@ -1937,28 +1890,19 @@ class APIHandler(BaseHTTPRequestHandler):
         Handle a GET request for the /v1/health endpoint.
         """
         self._write_json_response(
-            {
-                "status": "ok",
-                "provider": "mlx-lm",
-                "version": __version__,
-                "model": self._model_id(),
-                "mlx_version": mx.__version__,
-                "platform": platform.platform(),
-                "commit": "unknown",
-                "loaded_model_status": self._loaded_model_status(),
-            }
+            make_health_response(
+                model=self._model_id(),
+                mlx_version=mx.__version__,
+                platform=platform.platform(),
+                loaded_model_status=self._loaded_model_status(),
+            )
         )
 
     def _model_id(self):
-        return self.response_generator.cli_args.model or "default_model"
+        return resolve_model_id(self.response_generator.cli_args)
 
     def _loaded_model_status(self):
-        model_provider = getattr(self.response_generator, "model_provider", None)
-        if model_provider is None:
-            return "unknown"
-        if getattr(model_provider, "model", None) is None:
-            return "not_loaded"
-        return "loaded"
+        return loaded_model_status(self.response_generator)
 
     def _base_url(self):
         host = self.headers.get("Host")
@@ -1967,65 +1911,35 @@ class APIHandler(BaseHTTPRequestHandler):
         return f"http://{host}"
 
     def _capabilities(self):
-        has_structured = parse_request_constraint is not None
         embedding_model = getattr(
             self.response_generator.cli_args, "embedding_model", None
         )
-        return {
-            "chat_completions": "supported",
-            "text_completions": "supported",
-            "streaming": "supported",
-            "tool_calls": "supported" if has_structured else "degraded",
-            "structured_output": "supported" if has_structured else "unsupported",
-            "embeddings": "supported" if embedding_model is not None else "unsupported",
-        }
+        return make_server_capabilities(
+            structured_output_available=parse_request_constraint is not None,
+            embedding_model=embedding_model,
+        )
 
     def _endpoint_support(self):
         capabilities = self._capabilities()
-        return {
-            "/v1/chat/completions": "supported",
-            "/chat/completions": "supported",
-            "/v1/completions": "supported",
-            "/v1/embeddings": capabilities["embeddings"],
-            "/v1/models": "supported",
-            "/v1/health": "supported",
-            "/v1/capabilities": "supported",
-        }
+        return make_endpoint_support(capabilities)
 
     def handle_capabilities_request(self):
         """
         Handle a GET request for the /v1/capabilities endpoint.
         """
         model = self._model_id()
-        capabilities = self._capabilities()
-        endpoint = make_model_endpoint_fixture(
-            endpoint_id=f"mlx-lm:{model}",
+        embedding_model = getattr(
+            self.response_generator.cli_args, "embedding_model", None
+        )
+        response = make_capabilities_response(
             model=model,
             base_url=self._base_url(),
-            api_compatibility="mlx-lm-server",
-            capabilities=capabilities,
+            structured_output_available=parse_request_constraint is not None,
+            embedding_model=embedding_model,
+            max_output_tokens=getattr(
+                self.response_generator.cli_args, "max_tokens", None
+            ),
         )
-        response = {
-            "object": "capabilities",
-            "provider": "mlx-lm",
-            "version": __version__,
-            "model": model,
-            "status": "succeeded",
-            "capabilities": capabilities,
-            "endpoints": self._endpoint_support(),
-            "limits": {
-                "max_context_tokens": None,
-                "max_output_tokens": getattr(
-                    self.response_generator.cli_args, "max_tokens", None
-                ),
-            },
-            "model_info": {
-                "estimated_memory_gb": None,
-                "quantization": "unknown",
-            },
-            "endpoint": endpoint,
-            "schema": endpoint["schema"],
-        }
         self._write_json_response(response)
 
     def handle_models_request(self):

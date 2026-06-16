@@ -292,6 +292,38 @@ tool-call-valid rate when tool calls are present, platform metadata, HTTP
 metadata, and MLX peak memory when available in the benchmark process. Keep
 these files as local benchmark artifacts; do not commit large benchmark outputs.
 
+#### Apple Silicon live smoke gate
+
+`scripts/model_fusion_live_smoke.py` is an explicit, opt-in smoke gate for the
+model-fusion provider contract on real MLX hardware. By default it exits with a
+`SKIP:` message. When enabled, it:
+
+1. requires Apple Silicon, an importable `mlx`, and `MLX_LM_SMOKE_MODEL`;
+2. boots `python -m mlx_lm.server` on a free local port;
+3. checks `/v1/capabilities` and skips if forced tool calls are unavailable
+   because `mlx-lm[structured]` is not installed;
+4. sends one OpenAI-compatible chat request with `tools` and
+   `tool_choice: "required"`;
+5. writes one `model-call-record.v1` JSONL line; and
+6. reads the JSONL back and validates it with the bundled contract helpers.
+
+Example:
+
+```shell
+MLX_LM_RUN_LIVE_SMOKE=1 \
+MLX_LM_SMOKE_MODEL=mlx-community/Mistral-7B-Instruct-v0.3-4bit \
+MLX_LM_SMOKE_JSONL=/tmp/mlx-lm-model-fusion-live-smoke.jsonl \
+python scripts/model_fusion_live_smoke.py
+```
+
+Optional environment variables:
+
+- `MLX_LM_SMOKE_HOST` and `MLX_LM_SMOKE_PORT` override the bind address.
+- `MLX_LM_SMOKE_TIMEOUT_SECONDS` controls the server health-check timeout.
+
+The JSONL output is intended as a local verification artifact. Do not commit
+model assets or smoke/benchmark output beyond tiny fixtures.
+
 ### Embeddings
 
 Start the server with a separate embedding model to enable

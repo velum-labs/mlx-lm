@@ -125,7 +125,10 @@ print(
         self.assertEqual(output["protobuf_status"], "experimental_future")
         self.assertIs(output["protobuf_required"], False)
         self.assertEqual(output["schema_purpose"], "persisted_audit_benchmark_records")
-        self.assertEqual(output["typescript_package"], "@velum/model-fusion-protocol")
+        self.assertEqual(
+            output["typescript_package"],
+            "@velum-labs/model-fusion-protocol",
+        )
         self.assertEqual(output["typescript_openapi_types"], "openapi-typescript")
         self.assertEqual(output["typescript_openapi_client"], "openapi-fetch")
         self.assertEqual(output["typescript_json_schema_validator"], "ajv")

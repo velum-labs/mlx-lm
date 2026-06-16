@@ -96,6 +96,19 @@ def validate_protocol_lock() -> None:
         "protobuf/Buf not required for v1",
     )
     expect(
+        lock["generated_packages"]["typescript"]["package"]
+        == "@velum-labs/model-fusion-protocol",
+        "TypeScript generated package name",
+    )
+    expect(
+        lock["generated_packages"]["typescript"]["registry"] == "github_packages",
+        "TypeScript generated package registry",
+    )
+    expect(
+        lock["generated_packages"]["typescript"]["owner"] == "velum-labs",
+        "TypeScript generated package owner",
+    )
+    expect(
         lock["generated_packages"]["python"]["import_name"]
         == "velum_model_fusion_protocol",
         "Python generated package import name",

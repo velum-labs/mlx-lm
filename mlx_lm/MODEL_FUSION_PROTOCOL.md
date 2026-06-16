@@ -52,13 +52,14 @@ contracts.
 Fusionkit should publish generated artifacts from the same JSON Schema/OpenAPI
 contract release:
 
-- TypeScript: `@velum/model-fusion-protocol` on npm/GitHub Packages for TS
+- TypeScript: `@velum-labs/model-fusion-protocol` on GitHub Packages for TS
   consumers. It should expose generated OpenAPI client/types plus JSON Schema
   record validators. The pinned generator stack is `openapi-typescript` for
   service request/response types, `openapi-fetch` for the HTTP client, and `ajv`
   for JSON Schema record validation.
-- Python: `velum_model_fusion_protocol` on a private PyPI-compatible registry.
-  GitHub Packages is not sufficient for Python package consumption. Supported
+- Python: package name `velum-model-fusion-protocol`, import name
+  `velum_model_fusion_protocol`, on a private PyPI-compatible registry. GitHub
+  Packages is not sufficient for Python package consumption. Supported
   private-registry options should include Cloudsmith, AWS CodeArtifact, or
   Gemfury. It should expose generated OpenAPI client/models plus JSON
   Schema/Pydantic record validators. The pinned generator stack is
@@ -108,8 +109,9 @@ These items belong in fusionkit or the shared spec repo, not in mlx-lm:
   TypeScript OpenAPI client/types, TypeScript JSON Schema validators, Python
   OpenAPI client/models, and Python JSON Schema/Pydantic validators, then fail
   if the working tree differs;
-- publish `@velum/model-fusion-protocol`;
-- publish `velum_model_fusion_protocol` to a private PyPI-compatible registry;
+- publish `@velum-labs/model-fusion-protocol`;
+- publish `velum-model-fusion-protocol` to a private PyPI-compatible registry
+  with import name `velum_model_fusion_protocol`;
   and
 - publish the JSON Schema bundle and hash from the same protocol release.
 

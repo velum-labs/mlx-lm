@@ -1,0 +1,125 @@
+{
+  "artifact": "model-fusion-protocol",
+  "canonical_spec": "velum-labs/openclaw-shared/spec/2026-06-16-model-fusion-protocol-packaging-spec.md",
+  "origin": {
+    "repo": "velum-labs/fusionkit",
+    "contract_path": "contracts/model-fusion",
+    "openapi_path": "openapi/model-fusion.v1.yaml"
+  },
+  "v1_contracts": {
+    "durable_records": "json_schema",
+    "http_service_apis": "openapi_3_1",
+    "sdk_generation": [
+      "json_schema",
+      "openapi_3_1"
+    ],
+    "source_of_truth": "json_schema_openapi_3_1",
+    "openapi": {
+      "version": "3.1",
+      "status": "v1_source_of_truth",
+      "source": "fusionkit_contract_bundle"
+    }
+  },
+  "future_transports": {
+    "protobuf_buf": {
+      "status": "experimental_future",
+      "purpose": "internal streaming, Connect, or gRPC if service boundaries harden",
+      "required_for_v1": false
+    }
+  },
+  "schema_bundle": {
+    "hash": "sha256:75792f89c091b6ab4fd317a15fb03fd73438563dceff5ccf9f5d7c752dbf35f3",
+    "persisted_records": [
+      "model_endpoint.v1",
+      "model-call-record.v1"
+    ],
+    "format": "json_schema",
+    "purpose": "persisted_audit_benchmark_records"
+  },
+  "generated_packages": {
+    "typescript": {
+      "package": "@velum/model-fusion-protocol",
+      "registry": "github_packages",
+      "owner": "velum-labs",
+      "generators": {
+        "openapi_client_types": {
+          "openapi": "3.1",
+          "types": "openapi-typescript",
+          "client": "openapi-fetch"
+        },
+        "json_schema_validators": {
+          "records": "model-fusion JSON Schema bundle",
+          "validator": "ajv"
+        }
+      },
+      "exports": [
+        "generated OpenAPI client",
+        "generated OpenAPI request/response types",
+        "generated JSON Schema record validators"
+      ]
+    },
+    "python": {
+      "import_name": "velum_model_fusion_protocol",
+      "preferred_registries": [
+        "cloudsmith",
+        "aws_codeartifact",
+        "gemfury"
+      ],
+      "short_term_sources": [
+        "github_releases_wheels",
+        "uv_git_dependency"
+      ],
+      "generators": {
+        "openapi_client_models": {
+          "openapi": "3.1",
+          "client": "openapi-python-client"
+        },
+        "json_schema_validators": {
+          "records": "model-fusion JSON Schema bundle",
+          "models": "datamodel-code-generator",
+          "validators": "pydantic"
+        }
+      },
+      "exports": [
+        "generated OpenAPI client",
+        "generated OpenAPI request/response models",
+        "generated JSON Schema/Pydantic record validators"
+      ]
+    }
+  },
+  "generated_code_drift_check": {
+    "owner_repo": "velum-labs/fusionkit",
+    "strategy": "regenerate_and_fail_on_diff",
+    "applies_to": [
+      "typescript_openapi_client_types",
+      "typescript_json_schema_validators",
+      "python_openapi_client_models",
+      "python_json_schema_pydantic_validators"
+    ]
+  },
+  "service_boundaries": {
+    "HarnessExecutorService": {
+      "owner": "handoffkit",
+      "consumer": "fusionkit",
+      "purpose": "coding task execution"
+    },
+    "CursorHarnessService": {
+      "owner": "cursorkit",
+      "consumer": "fusionkit",
+      "purpose": "adapter output"
+    },
+    "MlxProviderService": {
+      "owner": "mlx-lm",
+      "consumer": "fusionkit",
+      "purpose": "provider capability and model-call metadata"
+    },
+    "BenchmarkExecutionEnvelope": {
+      "owner": "fusionkit",
+      "purpose": "benchmark execution request metadata"
+    },
+    "BenchmarkJoinEnvelope": {
+      "owner": "fusionkit",
+      "purpose": "benchmark result join metadata"
+    }
+  }
+}

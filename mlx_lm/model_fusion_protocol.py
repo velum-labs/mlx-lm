@@ -1,0 +1,85 @@
+"""Pinned model-fusion protocol contract metadata.
+
+The v1 JSON Schema/OpenAPI source of truth lives in fusionkit. This module is
+an import-safe consumer shim for mlx-lm until the generated Python package is
+available from a private package index.
+"""
+
+import json
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+
+MODEL_FUSION_PROTOCOL_LOCK_PATH = (
+    Path(__file__).with_name("model_fusion_protocol.lock.json")
+)
+
+
+def load_model_fusion_protocol_lock() -> Dict[str, Any]:
+    with MODEL_FUSION_PROTOCOL_LOCK_PATH.open(encoding="utf-8") as handle:
+        lock = json.load(handle)
+    if not isinstance(lock, dict):
+        raise ValueError("model-fusion protocol lock must be a JSON object")
+    return lock
+
+
+MODEL_FUSION_PROTOCOL_LOCK = load_model_fusion_protocol_lock()
+MODEL_FUSION_CANONICAL_SPEC = MODEL_FUSION_PROTOCOL_LOCK["canonical_spec"]
+MODEL_FUSION_CONTRACT_SOURCE_OF_TRUTH = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"][
+    "source_of_truth"
+]
+MODEL_FUSION_DURABLE_RECORD_FORMAT = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"][
+    "durable_records"
+]
+MODEL_FUSION_HTTP_API_FORMAT = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"][
+    "http_service_apis"
+]
+MODEL_FUSION_OPENAPI_STATUS = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"]["openapi"][
+    "status"
+]
+MODEL_FUSION_OPENAPI_VERSION = MODEL_FUSION_PROTOCOL_LOCK["v1_contracts"]["openapi"][
+    "version"
+]
+MODEL_FUSION_PROTOBUF_BUF_STATUS = MODEL_FUSION_PROTOCOL_LOCK["future_transports"][
+    "protobuf_buf"
+]["status"]
+MODEL_FUSION_PROTOBUF_BUF_REQUIRED_FOR_V1 = MODEL_FUSION_PROTOCOL_LOCK[
+    "future_transports"
+]["protobuf_buf"]["required_for_v1"]
+MODEL_FUSION_SCHEMA_BUNDLE_HASH = MODEL_FUSION_PROTOCOL_LOCK["schema_bundle"]["hash"]
+MODEL_FUSION_SCHEMA_BUNDLE_PURPOSE = MODEL_FUSION_PROTOCOL_LOCK["schema_bundle"][
+    "purpose"
+]
+MODEL_FUSION_PERSISTED_RECORDS: Tuple[str, ...] = tuple(
+    MODEL_FUSION_PROTOCOL_LOCK["schema_bundle"]["persisted_records"]
+)
+MODEL_FUSION_TYPESCRIPT_PACKAGE = MODEL_FUSION_PROTOCOL_LOCK["generated_packages"][
+    "typescript"
+]["package"]
+MODEL_FUSION_TYPESCRIPT_OPENAPI_TYPES_GENERATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["typescript"]["generators"]["openapi_client_types"]["types"]
+MODEL_FUSION_TYPESCRIPT_OPENAPI_CLIENT_GENERATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["typescript"]["generators"]["openapi_client_types"]["client"]
+MODEL_FUSION_TYPESCRIPT_JSON_SCHEMA_VALIDATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["typescript"]["generators"]["json_schema_validators"]["validator"]
+MODEL_FUSION_PYTHON_IMPORT_NAME = MODEL_FUSION_PROTOCOL_LOCK["generated_packages"][
+    "python"
+]["import_name"]
+MODEL_FUSION_PYTHON_OPENAPI_GENERATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["python"]["generators"]["openapi_client_models"]["client"]
+MODEL_FUSION_PYTHON_JSON_SCHEMA_MODEL_GENERATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["python"]["generators"]["json_schema_validators"]["models"]
+MODEL_FUSION_PYTHON_JSON_SCHEMA_VALIDATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["python"]["generators"]["json_schema_validators"]["validators"]
+MODEL_FUSION_GENERATED_CODE_DRIFT_STRATEGY = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_code_drift_check"
+]["strategy"]
+MODEL_FUSION_SERVICE_BOUNDARIES: Tuple[str, ...] = tuple(
+    MODEL_FUSION_PROTOCOL_LOCK["service_boundaries"]
+)

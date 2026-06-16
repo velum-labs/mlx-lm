@@ -31,6 +31,7 @@ setup(
         "protobuf",
         "pyyaml",
         "jinja2",
+        "regex",
     ],
     packages=[
         "mlx_lm",
@@ -41,6 +42,9 @@ setup(
         "mlx_lm.tool_parsers",
         "mlx_lm.chat_templates",
     ],
+    package_data={
+        "mlx_lm": ["model_fusion_protocol.lock.json"],
+    },
     python_requires=">=3.8",
     extras_require={
         "structured": ["outlines-core==0.2.14"],

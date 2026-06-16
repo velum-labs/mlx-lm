@@ -8,9 +8,9 @@ import uuid
 import urllib.parse
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-
-MODEL_FUSION_SCHEMA_BUNDLE_HASH = (
-    "sha256:75792f89c091b6ab4fd317a15fb03fd73438563dceff5ccf9f5d7c752dbf35f3"
+from .model_fusion_protocol import (
+    MODEL_FUSION_PERSISTED_RECORDS,
+    MODEL_FUSION_SCHEMA_BUNDLE_HASH,
 )
 
 _SHA256_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
@@ -103,6 +103,8 @@ def validate_model_fusion_contract_fixture(
     """Validate local model-fusion provider fixtures without cross-repo imports."""
     record = _require_object(value, expected_schema or "model-fusion contract")
     schema_name = expected_schema or record.get("schema")
+    if schema_name not in MODEL_FUSION_PERSISTED_RECORDS:
+        raise ValueError(f"Unsupported model-fusion fixture schema: {schema_name!r}")
     if schema_name == "model_endpoint.v1":
         return validate_model_endpoint_fixture(record)
     if schema_name == "model-call-record.v1":

@@ -256,13 +256,18 @@ limits such as context length, memory estimate, and quantization are reported as
 
 ### Model Fusion Provider Fixtures
 
-`mlx-lm` includes local, dependency-free validation helpers for the
-`model_endpoint.v1` and `model-call-record.v1` provider contract fixtures used
-by downstream model-fusion tooling. These checks live in
-`mlx_lm.openai_compat` and validate the contract metadata, required fields,
-allowed enum values, hashes, timestamps, usage objects, messages, and rejection
-of unsupported fields without importing FusionKit, HandoffKit, or CursorKit
-runtime code.
+`mlx-lm` consumes the fusionkit-origin model-fusion protocol rather than owning
+the contract. The current artifact pin lives in
+`mlx_lm/model_fusion_protocol.lock.json`; see
+[`MODEL_FUSION_PROTOCOL.md`](MODEL_FUSION_PROTOCOL.md) for the v1 JSON
+Schema/OpenAPI contract path, generated TypeScript/Python package paths, and
+drift checks.
+Until generated Python bindings are available from a private package index,
+`mlx_lm.openai_compat` keeps local, dependency-free validation helpers for the
+`model_endpoint.v1` and `model-call-record.v1` provider fixtures. These helpers
+validate the contract metadata, required fields, allowed enum values, hashes,
+timestamps, usage objects, messages, and rejection of unsupported fields without
+importing FusionKit, HandoffKit, or CursorKit runtime code.
 
 The HTTP server exposes `make_model_endpoint_fixture(...)` for tests and local
 tooling that need to build a schema-valid endpoint fixture for an MLX server.
@@ -291,6 +296,38 @@ status, request/response hashes, benchmark task id, schema-valid rate,
 tool-call-valid rate when tool calls are present, platform metadata, HTTP
 metadata, and MLX peak memory when available in the benchmark process. Keep
 these files as local benchmark artifacts; do not commit large benchmark outputs.
+
+#### Apple Silicon live smoke gate
+
+`scripts/model_fusion_live_smoke.py` is an explicit, opt-in smoke gate for the
+model-fusion provider contract on real MLX hardware. By default it exits with a
+`SKIP:` message. When enabled, it:
+
+1. requires Apple Silicon, an importable `mlx`, and `MLX_LM_SMOKE_MODEL`;
+2. boots `python -m mlx_lm.server` on a free local port;
+3. checks `/v1/capabilities` and skips if forced tool calls are unavailable
+   because `mlx-lm[structured]` is not installed;
+4. sends one OpenAI-compatible chat request with `tools` and
+   `tool_choice: "required"`;
+5. writes one `model-call-record.v1` JSONL line; and
+6. reads the JSONL back and validates it with the bundled contract helpers.
+
+Example:
+
+```shell
+MLX_LM_RUN_LIVE_SMOKE=1 \
+MLX_LM_SMOKE_MODEL=mlx-community/Mistral-7B-Instruct-v0.3-4bit \
+MLX_LM_SMOKE_JSONL=/tmp/mlx-lm-model-fusion-live-smoke.jsonl \
+python scripts/model_fusion_live_smoke.py
+```
+
+Optional environment variables:
+
+- `MLX_LM_SMOKE_HOST` and `MLX_LM_SMOKE_PORT` override the bind address.
+- `MLX_LM_SMOKE_TIMEOUT_SECONDS` controls the server health-check timeout.
+
+The JSONL output is intended as a local verification artifact. Do not commit
+model assets or smoke/benchmark output beyond tiny fixtures.
 
 ### Embeddings
 

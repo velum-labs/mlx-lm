@@ -6,22 +6,36 @@ import json
 import threading
 import types
 import unittest
+from unittest.mock import Mock
 
-import mlx.core as mx
-import requests
+MLX_IMPORT_ERROR = None
+try:
+    import mlx.core as mx
+except ImportError as e:
+    MLX_IMPORT_ERROR = e
+else:
+    try:
+        import requests
 
-import mlx_lm.server as server_module
-from mlx_lm.embeddings import EmbeddingNotConfiguredError
-from mlx_lm.models.cache import KVCache
-from mlx_lm.openai_compat import tool_call_schema, validate_model_endpoint_fixture
-from mlx_lm.server import (
-    APIHandler,
-    LRUPromptCache,
-    Response,
-    ResponseGenerator,
-    _process_control_tokens,
+        import mlx_lm.server as server_module
+        from mlx_lm.embeddings import EmbeddingNotConfiguredError
+        from mlx_lm.models.cache import KVCache
+        from mlx_lm.openai_compat import tool_call_schema, validate_model_endpoint_fixture
+        from mlx_lm.server import (
+            APIHandler,
+            LRUPromptCache,
+            Response,
+            ResponseGenerator,
+            _process_control_tokens,
+        )
+        from mlx_lm.utils import load
+    except ImportError as e:
+        MLX_IMPORT_ERROR = e
+
+requires_mlx = unittest.skipIf(
+    MLX_IMPORT_ERROR is not None,
+    f"mlx is required for server integration tests: {MLX_IMPORT_ERROR}",
 )
-from mlx_lm.utils import load
 
 
 class DummyModelProvider:
@@ -134,6 +148,7 @@ class FakeEmbeddingResponseGenerator:
         return embeddings, sum(max(1, len(text.split())) for text in inputs)
 
 
+@requires_mlx
 class TestModelFusionMetadataEndpoints(unittest.TestCase):
     def _serve(self, response_generator):
         httpd = http.server.HTTPServer(
@@ -246,6 +261,7 @@ class MockCache:
         return n
 
 
+@requires_mlx
 class TestProcessControlTokens(unittest.TestCase):
     @staticmethod
     def _r(text, state, match=None):
@@ -311,6 +327,7 @@ class TestProcessControlTokens(unittest.TestCase):
         )
 
 
+@requires_mlx
 class TestOpenAIEmbeddings(unittest.TestCase):
     def _serve(self, response_generator):
         httpd = http.server.HTTPServer(
@@ -411,6 +428,7 @@ class TestOpenAIEmbeddings(unittest.TestCase):
         self.assertIn("embed-model", model_ids)
 
 
+@requires_mlx
 class TestOpenAIToolCalling(unittest.TestCase):
     TOOL = {
         "type": "function",
@@ -696,6 +714,7 @@ class TestOpenAIToolCalling(unittest.TestCase):
         self.assertIn("valid JSON tool call", response.json()["error"]["message"])
 
 
+@requires_mlx
 class TestServer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -860,6 +879,7 @@ class TestServer(unittest.TestCase):
         self.assertIn("created", model)
 
 
+@requires_mlx
 class TestServerWithDraftModel(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1007,10 +1027,10 @@ class TestServerWithDraftModel(unittest.TestCase):
         self.assertIsNotNone(second_response_body["choices"][0]["message"]["content"])
 
 
+@requires_mlx
 class TestKeepalive(unittest.TestCase):
     def test_keepalive_callback(self):
         """Test keepalive callback sends SSE comments and handles errors"""
-        from unittest.mock import Mock
 
         # Mock handler
         mock_wfile = io.BytesIO()
@@ -1056,6 +1076,7 @@ class TestKeepalive(unittest.TestCase):
             self.fail(f"Callback should handle BrokenPipeError: {e}")
 
 
+@requires_mlx
 class TestLRUPromptCache(unittest.TestCase):
     def test_caching(self):
         cache = LRUPromptCache(max_size=10)

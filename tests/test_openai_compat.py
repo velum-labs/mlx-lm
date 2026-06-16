@@ -1,18 +1,9 @@
-import importlib.util
 import json
 import unittest
 from copy import deepcopy
 from pathlib import Path
 
-OPENAI_COMPAT_PATH = (
-    Path(__file__).resolve().parents[1] / "mlx_lm" / "openai_compat.py"
-)
-OPENAI_COMPAT_SPEC = importlib.util.spec_from_file_location(
-    "mlx_lm_openai_compat_for_tests",
-    OPENAI_COMPAT_PATH,
-)
-openai_compat = importlib.util.module_from_spec(OPENAI_COMPAT_SPEC)
-OPENAI_COMPAT_SPEC.loader.exec_module(openai_compat)
+import mlx_lm.openai_compat as openai_compat
 
 MODEL_FUSION_SCHEMA_BUNDLE_HASH = openai_compat.MODEL_FUSION_SCHEMA_BUNDLE_HASH
 ToolCallFormatter = openai_compat.ToolCallFormatter

@@ -1,0 +1,57 @@
+name: Velum Protocol Validation
+
+on:
+  pull_request:
+  push:
+    branches: ["main", "cursor/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  validate_protocol_consumption:
+    name: Validate protocol lock and import-safe coverage
+    if: github.repository == 'velum-labs/mlx-lm'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install import-safe test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install regex
+
+      - name: Validate protocol lock and codegen metadata
+        env:
+          ALLOW_GITHUB_RELEASE_FALLBACK: "1"
+        run: python scripts/validate_velum_release.py
+
+      - name: Compile import-safe modules
+        run: |
+          python -m py_compile \
+            mlx_lm/tool_parsers/*.py \
+            mlx_lm/model_fusion_protocol.py \
+            mlx_lm/openai_compat.py \
+            mlx_lm/server_metadata.py \
+            scripts/model_fusion_live_smoke.py \
+            scripts/validate_velum_release.py
+
+      - name: Run import-safe tests
+        run: |
+          python -m unittest \
+            tests.test_tool_parsing \
+            tests.test_import_safety \
+            tests.test_openai_compat \
+            tests.test_model_fusion_contracts \
+            tests.test_model_fusion_live_smoke \
+            tests.test_server

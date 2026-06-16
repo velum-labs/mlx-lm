@@ -66,13 +66,12 @@ contract release:
 
 The origin repo should run CI that:
 
-1. runs `buf lint` and `buf breaking`;
-2. validates the OpenAPI 3.1 HTTP/JSON service surface;
-3. regenerates TS/Python SDK packages from JSON Schema/OpenAPI contracts;
-4. regenerates JSON Schema bundle hashes for persisted audit/benchmark records;
-5. fails if generated package artifacts, OpenAPI outputs, JSON Schema outputs,
+1. validates the OpenAPI 3.1 HTTP/JSON service surface;
+2. regenerates TS/Python SDK packages from JSON Schema/OpenAPI contracts;
+3. regenerates JSON Schema bundle hashes for persisted audit/benchmark records;
+4. fails if generated package artifacts, OpenAPI outputs, JSON Schema outputs,
    or bundle hashes differ from committed outputs; and
-6. publishes TS/Python packages only from the exact same contract release.
+5. publishes TS/Python packages only from the exact same contract release.
 
 This repo runs consumer-side checks that:
 

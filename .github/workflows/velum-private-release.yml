@@ -1,0 +1,165 @@
+name: Velum Private Release
+
+on:
+  push:
+    tags:
+      - "velum-mlx-lm-v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or SHA to build for a dry run"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_test_validate:
+    name: Build, test, and validate release metadata
+    if: github.repository == 'velum-labs/mlx-lm'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Compile import-safe release modules
+        run: |
+          python -m py_compile \
+            mlx_lm/model_fusion_protocol.py \
+            mlx_lm/openai_compat.py \
+            mlx_lm/server_metadata.py \
+            scripts/model_fusion_live_smoke.py \
+            scripts/validate_velum_release.py
+
+      - name: Run non-MLX import-safe tests
+        run: |
+          python -m unittest \
+            tests.test_import_safety \
+            tests.test_openai_compat \
+            tests.test_model_fusion_contracts \
+            tests.test_model_fusion_live_smoke \
+            tests.test_tool_parsing \
+            tests.test_server
+
+      - name: Validate release metadata and publish target
+        env:
+          PRIVATE_PYPI_URL: ${{ secrets.PRIVATE_PYPI_URL }}
+          PRIVATE_PYPI_TOKEN: ${{ secrets.PRIVATE_PYPI_TOKEN }}
+          PRIVATE_PYPI_USERNAME: ${{ secrets.PRIVATE_PYPI_USERNAME }}
+          PRIVATE_PYPI_PASSWORD: ${{ secrets.PRIVATE_PYPI_PASSWORD }}
+          ALLOW_GITHUB_RELEASE_FALLBACK: "1"
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            python scripts/validate_velum_release.py \
+              --tag "${GITHUB_REF_NAME}" \
+              --require-tag
+          else
+            python scripts/validate_velum_release.py
+          fi
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Upload distribution artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: mlx-lm-dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish private package or release artifacts
+    needs: build_test_validate
+    if: github.repository == 'velum-labs/mlx-lm' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/velum-mlx-lm-v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download distribution artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: mlx-lm-dist
+          path: dist
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install publishing tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install twine
+
+      - name: Choose publish target
+        id: target
+        env:
+          PRIVATE_PYPI_URL: ${{ secrets.PRIVATE_PYPI_URL }}
+          PRIVATE_PYPI_TOKEN: ${{ secrets.PRIVATE_PYPI_TOKEN }}
+          PRIVATE_PYPI_USERNAME: ${{ secrets.PRIVATE_PYPI_USERNAME }}
+          PRIVATE_PYPI_PASSWORD: ${{ secrets.PRIVATE_PYPI_PASSWORD }}
+        run: |
+          if [ -n "${PRIVATE_PYPI_URL}" ] && { [ -n "${PRIVATE_PYPI_TOKEN}" ] || { [ -n "${PRIVATE_PYPI_USERNAME}" ] && [ -n "${PRIVATE_PYPI_PASSWORD}" ]; }; }; then
+            echo "target=private-pypi" >> "${GITHUB_OUTPUT}"
+          else
+            echo "target=github-release" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish to private PyPI-compatible registry
+        if: steps.target.outputs.target == 'private-pypi'
+        env:
+          PRIVATE_PYPI_URL: ${{ secrets.PRIVATE_PYPI_URL }}
+          PRIVATE_PYPI_TOKEN: ${{ secrets.PRIVATE_PYPI_TOKEN }}
+          PRIVATE_PYPI_USERNAME: ${{ secrets.PRIVATE_PYPI_USERNAME }}
+          PRIVATE_PYPI_PASSWORD: ${{ secrets.PRIVATE_PYPI_PASSWORD }}
+        run: |
+          case "${PRIVATE_PYPI_URL}" in
+            *pypi.org*|*pkg.github.com*|*npm.pkg.github.com*)
+              echo "Refusing to publish to public PyPI or GitHub Packages for Python." >&2
+              exit 1
+              ;;
+          esac
+          if [ -n "${PRIVATE_PYPI_TOKEN}" ]; then
+            TWINE_USERNAME="__token__"
+            TWINE_PASSWORD="${PRIVATE_PYPI_TOKEN}"
+          else
+            TWINE_USERNAME="${PRIVATE_PYPI_USERNAME}"
+            TWINE_PASSWORD="${PRIVATE_PYPI_PASSWORD}"
+          fi
+          TWINE_USERNAME="${TWINE_USERNAME}" \
+          TWINE_PASSWORD="${TWINE_PASSWORD}" \
+          python -m twine upload \
+            --repository-url "${PRIVATE_PYPI_URL}" \
+            dist/*
+
+      - name: Upload distributions to GitHub Release fallback
+        if: steps.target.outputs.target == 'github-release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" \
+              --draft \
+              --title "mlx-lm ${GITHUB_REF_NAME}" \
+              --notes "Private PyPI secrets were not configured; uploading wheel/sdist artifacts as a draft GitHub Release fallback."
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber

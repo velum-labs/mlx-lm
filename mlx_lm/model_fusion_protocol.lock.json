@@ -38,7 +38,7 @@
   },
   "generated_packages": {
     "typescript": {
-      "package": "@velum/model-fusion-protocol",
+      "package": "@velum-labs/model-fusion-protocol",
       "registry": "github_packages",
       "owner": "velum-labs",
       "generators": {

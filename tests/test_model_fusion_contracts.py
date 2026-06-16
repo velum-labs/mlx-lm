@@ -67,7 +67,7 @@ class TestModelFusionContractFixtures(unittest.TestCase):
         )
         self.assertEqual(
             model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_PACKAGE,
-            "@velum/model-fusion-protocol",
+            "@velum-labs/model-fusion-protocol",
         )
         self.assertEqual(
             model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_OPENAPI_TYPES_GENERATOR,

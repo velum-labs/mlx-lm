@@ -67,6 +67,7 @@ def validate_setup_metadata() -> None:
         'name="mlx-lm"',
         "version=__version__",
         '"mlx_lm": ["model_fusion_protocol.lock.json"]',
+        '"regex"',
     )
     missing = [snippet for snippet in required_snippets if snippet not in setup_text]
     if missing:

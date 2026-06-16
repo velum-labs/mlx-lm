@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-import re
+import regex as re
 
 _tool_call_regex = re.compile(r"\s*(\w+)\[ARGS\]\s*(\{.*\})", re.DOTALL)
 

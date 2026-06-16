@@ -1,7 +1,7 @@
 import json
 from typing import Any
 
-import re
+import regex as re
 
 tool_call_start: str = "<minimax:tool_call>"
 tool_call_end: str = "</minimax:tool_call>"

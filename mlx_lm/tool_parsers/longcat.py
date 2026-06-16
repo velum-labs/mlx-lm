@@ -4,7 +4,7 @@ import ast
 import json
 from typing import Any
 
-import re
+import regex as re
 
 _func_name_regex = re.compile(r"^(.*?)<longcat_arg_key>", re.DOTALL)
 _func_arg_regex = re.compile(

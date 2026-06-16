@@ -3,7 +3,7 @@
 import ast
 from typing import Any, Dict, List
 
-import re
+import regex as re
 
 """
 Tool parser for Pythonic function call formats.

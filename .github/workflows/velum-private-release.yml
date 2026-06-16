@@ -37,7 +37,7 @@ jobs:
       - name: Install build tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install build
+          python -m pip install build regex
 
       - name: Compile import-safe release modules
         run: |

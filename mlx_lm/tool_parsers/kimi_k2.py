@@ -8,7 +8,7 @@ import ast
 import json
 from typing import Any
 
-import re
+import regex as re
 
 # kimi has a fixed function naming scheme, with a json formatted arg
 #   functions.multiply:0<|tool_call_argument_begin|>{"a": 2, "b": 3}

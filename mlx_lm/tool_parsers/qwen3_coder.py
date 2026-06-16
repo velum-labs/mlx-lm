@@ -9,7 +9,7 @@ import ast
 import json
 from typing import Any, Optional
 
-import re
+import regex as re
 
 _function_regex = re.compile(r"<function=(.*?)</function>$", re.DOTALL)
 _parameter_regex = re.compile(r"<parameter=(.*?)</parameter>", re.DOTALL)

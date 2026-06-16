@@ -10,7 +10,7 @@ import json
 import shlex
 from typing import Any
 
-import re
+import regex as re
 
 _func_name_regex = re.compile(r"^(.*?)<arg_key>", re.DOTALL)
 _func_arg_regex = re.compile(

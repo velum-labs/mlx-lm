@@ -171,6 +171,127 @@ For streamed chat completions, `stream_options: {"include_usage": true}` emits
 one final chunk before `[DONE]` with an empty `choices` array and a populated
 `usage` object.
 
+### Health and Capabilities
+
+`GET /v1/health` is a lightweight process health check. It does not load a
+model or run generation.
+
+```json
+{
+  "status": "ok",
+  "provider": "mlx-lm",
+  "version": "<mlx-lm version>",
+  "model": "<configured model or default_model>",
+  "mlx_version": "<mlx version>",
+  "platform": "<platform string>",
+  "commit": "unknown",
+  "loaded_model_status": "loaded | not_loaded | unknown"
+}
+```
+
+The legacy `GET /health` endpoint is still available and continues to return
+`{"status": "ok"}`.
+
+`GET /v1/capabilities` returns capability metadata for the running server:
+
+```json
+{
+  "object": "capabilities",
+  "provider": "mlx-lm",
+  "version": "<mlx-lm version>",
+  "model": "<configured model or default_model>",
+  "status": "succeeded",
+  "capabilities": {
+    "chat_completions": "supported",
+    "text_completions": "supported",
+    "streaming": "supported",
+    "tool_calls": "supported | degraded",
+    "structured_output": "supported | unsupported",
+    "embeddings": "supported | unsupported"
+  },
+  "endpoints": {
+    "/v1/chat/completions": "supported",
+    "/chat/completions": "supported",
+    "/v1/completions": "supported",
+    "/v1/embeddings": "supported | unsupported",
+    "/v1/models": "supported",
+    "/v1/health": "supported",
+    "/v1/capabilities": "supported"
+  },
+  "limits": {
+    "max_context_tokens": null,
+    "max_output_tokens": 512
+  },
+  "model_info": {
+    "estimated_memory_gb": null,
+    "quantization": "unknown"
+  },
+  "schema": "model_endpoint.v1",
+  "endpoint": {"schema": "model_endpoint.v1"}
+}
+```
+
+The nested `endpoint` object is a schema-valid `model_endpoint.v1` provider
+contract record for the running server. It includes the standard contract
+metadata fields plus:
+
+- `endpoint_id`: A local endpoint id derived from the configured generation
+  model, or `default_model` when no startup model is configured.
+- `owner`: Always `mlx-lm`.
+- `provider`: Always `mlx-lm`.
+- `model`: The configured generation model, or `default_model`.
+- `base_url`: The request base URL derived from the HTTP `Host` header.
+- `api_compatibility`: `mlx-lm-server`.
+- `capabilities`: A map whose values are one of `supported`, `unsupported`,
+  `degraded`, or `unknown`.
+- `status`: `succeeded` when the server can answer the metadata request.
+
+The capabilities map currently reports `chat_completions`,
+`text_completions`, and `streaming` as `supported`. `embeddings` is
+`supported` only when `--embedding-model` is configured. `structured_output` is
+`supported` only when the `mlx-lm[structured]` extra is installed; otherwise it
+is `unsupported`, and `tool_calls` is reported as `degraded`. Unknown runtime
+limits such as context length, memory estimate, and quantization are reported as
+`null` or `unknown` rather than guessed.
+
+### Model Fusion Provider Fixtures
+
+`mlx-lm` includes local, dependency-free validation helpers for the
+`model_endpoint.v1` and `model-call-record.v1` provider contract fixtures used
+by downstream model-fusion tooling. These checks live in
+`mlx_lm.openai_compat` and validate the contract metadata, required fields,
+allowed enum values, hashes, timestamps, usage objects, messages, and rejection
+of unsupported fields without importing FusionKit, HandoffKit, or CursorKit
+runtime code.
+
+The HTTP server exposes `make_model_endpoint_fixture(...)` for tests and local
+tooling that need to build a schema-valid endpoint fixture for an MLX server.
+`benchmarks/server_benchmark.py` similarly exposes
+`make_model_call_record_fixture(...)`, `contract_sha256(...)`, and JSONL writer
+helpers so benchmark code can validate provider call records locally. These
+helpers are additive validation utilities and do not change generation behavior.
+
+To emit per-request `model-call-record.v1` JSONL while running the local server:
+
+```shell
+python benchmarks/server_benchmark.py \
+  --url http://localhost:8080/v1/chat/completions \
+  --model mlx-community/Mistral-7B-Instruct-v0.3-4bit \
+  --endpoint-id mlx-local-mistral-7b \
+  --benchmark-task-id mf-42-local-smoke \
+  --concurrency 4 \
+  --total-requests 20 \
+  --jsonl-output /tmp/mlx-lm-model-call-records.jsonl
+```
+
+Each JSONL line is schema-validated before it is written. Records include the
+schema bundle hash, benchmark producer git SHA when available, endpoint/model
+ids, generated call id, echoed provider request id when available, latency,
+status, request/response hashes, benchmark task id, schema-valid rate,
+tool-call-valid rate when tool calls are present, platform metadata, HTTP
+metadata, and MLX peak memory when available in the benchmark process. Keep
+these files as local benchmark artifacts; do not commit large benchmark outputs.
+
 ### Embeddings
 
 Start the server with a separate embedding model to enable

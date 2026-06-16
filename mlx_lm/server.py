@@ -1,6 +1,7 @@
 # Copyright © 2023-2024 Apple Inc.
 
 import argparse
+import datetime
 import json
 import logging
 import pickle
@@ -51,8 +52,10 @@ from .models.cache import (
     make_prompt_cache,
 )
 from .openai_compat import (
+    MODEL_FUSION_SCHEMA_BUNDLE_HASH,
     ToolCallFormatter,
     forced_tool_instruction,
+    validate_model_endpoint_fixture,
     parse_structured_tool_calls,
     resolve_tool_choice,
     tool_call_schema,
@@ -76,11 +79,65 @@ except ImportError:
     parse_request_constraint = None
 
 STRUCTURED_FIELDS = ("response_format", "guided_json", "guided_regex", "guided_choice")
+VELUM_MODEL_CALL_ID_HEADER = "x-velum-model-call-id"
 
 
 def get_system_fingerprint():
     gpu_arch = mx.device_info()["architecture"]
     return f"{__version__}-{mx.__version__}-{platform.platform()}-{gpu_arch}"
+
+
+def make_model_endpoint_fixture(
+    endpoint_id: str,
+    model: str,
+    *,
+    base_url: Optional[str] = None,
+    owner: str = "mlx-lm",
+    provider: str = "mlx-lm",
+    api_compatibility: str = "mlx-lm-server",
+    capabilities: Optional[Dict[str, str]] = None,
+    status: str = "succeeded",
+    created_at: Optional[str] = None,
+    producer_git_sha: str = "0" * 40,
+    max_context_tokens: Optional[int] = None,
+    estimated_memory_gb: Optional[float] = None,
+    tags: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build and validate a local provider contract endpoint fixture."""
+    timestamp = created_at or (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    record: Dict[str, Any] = {
+        "schema": "model_endpoint.v1",
+        "schema_version": "v1",
+        "schema_bundle_hash": MODEL_FUSION_SCHEMA_BUNDLE_HASH,
+        "producer": "mlx-lm",
+        "producer_version": __version__,
+        "producer_git_sha": producer_git_sha,
+        "created_at": timestamp,
+        "endpoint_id": endpoint_id,
+        "owner": owner,
+        "provider": provider,
+        "model": model,
+        "api_compatibility": api_compatibility,
+        "capabilities": (
+            capabilities if capabilities is not None else {"chat_completions": "supported"}
+        ),
+        "status": status,
+    }
+    if base_url is not None:
+        record["base_url"] = base_url
+    if max_context_tokens is not None:
+        record["max_context_tokens"] = max_context_tokens
+    if estimated_memory_gb is not None:
+        record["estimated_memory_gb"] = estimated_memory_gb
+    if tags is not None:
+        record["tags"] = tags
+
+    validate_model_endpoint_fixture(record)
+    return record
 
 
 def convert_chat(messages: List[dict], role_mapping: Optional[dict] = None):
@@ -1113,16 +1170,67 @@ class APIHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "*")
         self.send_header("Access-Control-Allow-Headers", "*")
 
+    def _get_model_call_id(self) -> Optional[str]:
+        model_call_id = self.headers.get(VELUM_MODEL_CALL_ID_HEADER)
+        if model_call_id is None:
+            return None
+        model_call_id = model_call_id.strip()
+        if not model_call_id or "\r" in model_call_id or "\n" in model_call_id:
+            return None
+        return model_call_id
+
+    def _set_model_call_id_header(self):
+        model_call_id = self._get_model_call_id()
+        if model_call_id is not None:
+            self.send_header(VELUM_MODEL_CALL_ID_HEADER, model_call_id)
+
     def _set_completion_headers(self, status_code: int = 200):
         self.send_response(status_code)
         self.send_header("Content-type", "application/json")
+        self._set_model_call_id_header()
         self._set_cors_headers()
 
     def _set_stream_headers(self, status_code: int = 200):
         self.send_response(status_code)
         self.send_header("Content-type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        self._set_model_call_id_header()
         self._set_cors_headers()
+
+    def _write_json_response(self, response: Dict[str, Any], status_code: int = 200):
+        response_json = json.dumps(response).encode()
+        self._set_completion_headers(status_code)
+        self.send_header("Content-Length", str(len(response_json)))
+        self.end_headers()
+        self.wfile.write(response_json)
+        self.wfile.flush()
+
+    def _error_type(self, status_code: int) -> str:
+        if status_code == 404:
+            return "not_found_error"
+        if status_code >= 500:
+            return "server_error"
+        return "invalid_request_error"
+
+    def _write_error(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        code: Optional[str] = None,
+        param: Optional[str] = None,
+    ):
+        self._write_json_response(
+            {
+                "error": {
+                    "message": message,
+                    "type": self._error_type(status_code),
+                    "param": param,
+                    "code": code,
+                }
+            },
+            status_code,
+        )
 
     def do_OPTIONS(self):
         self._set_completion_headers(204)
@@ -1139,38 +1247,36 @@ class APIHandler(BaseHTTPRequestHandler):
         }
 
         if self.path not in request_factories and self.path != "/v1/embeddings":
-            self._set_completion_headers(404)
-            self.end_headers()
-            self.wfile.write(b"Not Found")
+            self._write_error(404, "Not Found", code="not_found")
             return
 
         # Fetch and parse request body
         content_length = self.headers.get("Content-Length")
         if content_length is None:
-            self._set_completion_headers(411)
-            self.end_headers()
-            self.wfile.write(
-                json.dumps({"error": "Content-Length header is required"}).encode()
+            self._write_error(
+                411,
+                "Content-Length header is required",
+                code="missing_content_length",
             )
             return
         try:
             content_length = int(content_length)
         except ValueError:
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(
-                json.dumps({"error": "Invalid Content-Length header"}).encode()
+            self._write_error(
+                400,
+                "Invalid Content-Length header",
+                code="invalid_content_length",
             )
             return
         raw_body = self.rfile.read(content_length)
         try:
             self.body = json.loads(raw_body.decode())
         except json.JSONDecodeError as e:
-            logging.error(f"JSONDecodeError: {e} - Raw body: {raw_body.decode()}")
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(
-                json.dumps({"error": f"Invalid JSON in request body: {e}"}).encode()
+            logging.error("JSONDecodeError while parsing request body: %s", e)
+            self._write_error(
+                400,
+                f"Invalid JSON in request body: {e}",
+                code="invalid_json",
             )
             return
 
@@ -1178,12 +1284,11 @@ class APIHandler(BaseHTTPRequestHandler):
             debug_body = json.dumps(self.body, indent="\t")
             logging.debug(f"Incoming Request Body: {debug_body}")
         if not isinstance(self.body, dict):
-            debug_body = json.dumps(self.body, indent="\t")
-            logging.error(f"Invalid Request Body: {debug_body}")
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(
-                json.dumps({"error": "Request should be a JSON dictionary"}).encode()
+            logging.error("Invalid request body type: %s", type(self.body).__name__)
+            self._write_error(
+                400,
+                "Request should be a JSON dictionary",
+                code="invalid_request_body",
             )
             return
 
@@ -1227,9 +1332,7 @@ class APIHandler(BaseHTTPRequestHandler):
         try:
             self.validate_model_parameters()
         except ValueError as e:
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self._write_error(400, str(e), code="invalid_request_parameter")
             return
 
         self.tool_choice = self.body.get("tool_choice", "auto")
@@ -1240,9 +1343,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 self.tool_choice, tools
             )
         except ValueError as e:
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self._write_error(400, str(e), code="invalid_tool_choice")
             return
         self.tool_choice = parsed_choice
         if tools:
@@ -1255,40 +1356,25 @@ class APIHandler(BaseHTTPRequestHandler):
         # Structured output constraint (response_format / guided_*)
         self.structured_constraint = None
         if self.structured_tool_tools is not None and parse_request_constraint is None:
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(
-                json.dumps(
-                    {
-                        "error": (
-                            "tool_choice requiring a tool call requires "
-                            "mlx-lm[structured]"
-                        )
-                    }
-                ).encode()
+            self._write_error(
+                400,
+                "tool_choice requiring a tool call requires mlx-lm[structured]",
+                code="structured_extra_required",
             )
             return
         if parse_request_constraint is not None:
             try:
                 self.structured_constraint = parse_request_constraint(self.body)
             except ValueError as e:
-                self._set_completion_headers(400)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
+                self._write_error(400, str(e), code="invalid_structured_constraint")
                 return
             if self.structured_tool_tools is not None:
                 if self.structured_constraint is not None:
-                    self._set_completion_headers(400)
-                    self.end_headers()
-                    self.wfile.write(
-                        json.dumps(
-                            {
-                                "error": (
-                                    "tool_choice requiring a tool call cannot be "
-                                    "combined with response_format or guided_*"
-                                )
-                            }
-                        ).encode()
+                    self._write_error(
+                        400,
+                        "tool_choice requiring a tool call cannot be combined "
+                        "with response_format or guided_*",
+                        code="incompatible_structured_tool_choice",
                     )
                     return
                 try:
@@ -1296,9 +1382,7 @@ class APIHandler(BaseHTTPRequestHandler):
                         {"guided_json": tool_call_schema(self.structured_tool_tools)}
                     )
                 except ValueError as e:
-                    self._set_completion_headers(400)
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"error": str(e)}).encode())
+                    self._write_error(400, str(e), code="invalid_tool_schema")
                     return
         elif any(self.body.get(field) is not None for field in STRUCTURED_FIELDS):
             logging.warning(
@@ -1377,27 +1461,19 @@ class APIHandler(BaseHTTPRequestHandler):
                 getattr(self.response_generator.cli_args, "embedding_model", None),
             )
         except EmbeddingModelUnavailableError as e:
-            self._set_completion_headers(404)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self._write_error(404, str(e), code="model_not_found")
             return
         except EmbeddingError as e:
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self._write_error(400, str(e), code="invalid_embedding_request")
             return
 
         try:
             embeddings, prompt_tokens = self.response_generator.embed(request.inputs)
         except EmbeddingNotConfiguredError as e:
-            self._set_completion_headers(400)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self._write_error(400, str(e), code="embedding_not_configured")
             return
         except EmbeddingModelError as e:
-            self._set_completion_headers(500)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self._write_error(500, str(e), code="embedding_model_error")
             return
 
         response = {
@@ -1593,9 +1669,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 progress_callback=keepalive_callback,
             )
         except Exception as e:
-            self._set_completion_headers(404)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self._write_error(404, str(e), code="generation_error")
             return
 
         # Prepare the headers
@@ -1680,14 +1754,11 @@ class APIHandler(BaseHTTPRequestHandler):
             if self.structured_tool_tools is not None:
                 if not text.strip():
                     if not stream_started:
-                        self._set_completion_headers(400)
-                        self.end_headers()
-                        self.wfile.write(
-                            json.dumps(
-                                {"error": "model did not return a tool call"}
-                            ).encode()
+                        self._write_error(
+                            400,
+                            "model did not return a tool call",
+                            code="missing_tool_call",
                         )
-                        self.wfile.flush()
                         return
                     raise ValueError("model did not return a tool call")
                 try:
@@ -1696,10 +1767,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     )
                 except ValueError as e:
                     if not stream_started:
-                        self._set_completion_headers(400)
-                        self.end_headers()
-                        self.wfile.write(json.dumps({"error": str(e)}).encode())
-                        self.wfile.flush()
+                        self._write_error(400, str(e), code="invalid_tool_call")
                         return
                     raise
                 formatted_tool_calls = tool_formatter.format_parsed(parsed_tool_calls)
@@ -1843,14 +1911,16 @@ class APIHandler(BaseHTTPRequestHandler):
         """
         Respond to a GET request from a client.
         """
-        if self.path.startswith("/v1/models"):
+        if self.path == "/v1/health":
+            self.handle_v1_health_check()
+        elif self.path == "/v1/capabilities":
+            self.handle_capabilities_request()
+        elif self.path.startswith("/v1/models"):
             self.handle_models_request()
         elif self.path == "/health":
             self.handle_health_check()
         else:
-            self._set_completion_headers(404)
-            self.end_headers()
-            self.wfile.write(b"Not Found")
+            self._write_error(404, "Not Found", code="not_found")
 
     def handle_health_check(self):
         """
@@ -1861,6 +1931,102 @@ class APIHandler(BaseHTTPRequestHandler):
 
         self.wfile.write('{"status": "ok"}'.encode())
         self.wfile.flush()
+
+    def handle_v1_health_check(self):
+        """
+        Handle a GET request for the /v1/health endpoint.
+        """
+        self._write_json_response(
+            {
+                "status": "ok",
+                "provider": "mlx-lm",
+                "version": __version__,
+                "model": self._model_id(),
+                "mlx_version": mx.__version__,
+                "platform": platform.platform(),
+                "commit": "unknown",
+                "loaded_model_status": self._loaded_model_status(),
+            }
+        )
+
+    def _model_id(self):
+        return self.response_generator.cli_args.model or "default_model"
+
+    def _loaded_model_status(self):
+        model_provider = getattr(self.response_generator, "model_provider", None)
+        if model_provider is None:
+            return "unknown"
+        if getattr(model_provider, "model", None) is None:
+            return "not_loaded"
+        return "loaded"
+
+    def _base_url(self):
+        host = self.headers.get("Host")
+        if host is None:
+            return None
+        return f"http://{host}"
+
+    def _capabilities(self):
+        has_structured = parse_request_constraint is not None
+        embedding_model = getattr(
+            self.response_generator.cli_args, "embedding_model", None
+        )
+        return {
+            "chat_completions": "supported",
+            "text_completions": "supported",
+            "streaming": "supported",
+            "tool_calls": "supported" if has_structured else "degraded",
+            "structured_output": "supported" if has_structured else "unsupported",
+            "embeddings": "supported" if embedding_model is not None else "unsupported",
+        }
+
+    def _endpoint_support(self):
+        capabilities = self._capabilities()
+        return {
+            "/v1/chat/completions": "supported",
+            "/chat/completions": "supported",
+            "/v1/completions": "supported",
+            "/v1/embeddings": capabilities["embeddings"],
+            "/v1/models": "supported",
+            "/v1/health": "supported",
+            "/v1/capabilities": "supported",
+        }
+
+    def handle_capabilities_request(self):
+        """
+        Handle a GET request for the /v1/capabilities endpoint.
+        """
+        model = self._model_id()
+        capabilities = self._capabilities()
+        endpoint = make_model_endpoint_fixture(
+            endpoint_id=f"mlx-lm:{model}",
+            model=model,
+            base_url=self._base_url(),
+            api_compatibility="mlx-lm-server",
+            capabilities=capabilities,
+        )
+        response = {
+            "object": "capabilities",
+            "provider": "mlx-lm",
+            "version": __version__,
+            "model": model,
+            "status": "succeeded",
+            "capabilities": capabilities,
+            "endpoints": self._endpoint_support(),
+            "limits": {
+                "max_context_tokens": None,
+                "max_output_tokens": getattr(
+                    self.response_generator.cli_args, "max_tokens", None
+                ),
+            },
+            "model_info": {
+                "estimated_memory_gb": None,
+                "quantization": "unknown",
+            },
+            "endpoint": endpoint,
+            "schema": endpoint["schema"],
+        }
+        self._write_json_response(response)
 
     def handle_models_request(self):
         """

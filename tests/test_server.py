@@ -13,7 +13,7 @@ import requests
 import mlx_lm.server as server_module
 from mlx_lm.embeddings import EmbeddingNotConfiguredError
 from mlx_lm.models.cache import KVCache
-from mlx_lm.openai_compat import tool_call_schema
+from mlx_lm.openai_compat import tool_call_schema, validate_model_endpoint_fixture
 from mlx_lm.server import (
     APIHandler,
     LRUPromptCache,
@@ -118,6 +118,7 @@ class FakeEmbeddingResponseGenerator:
             allowed_origins=["*"],
             model=None,
             embedding_model=embedding_model,
+            max_tokens=512,
         )
 
     def embed(self, inputs):
@@ -131,6 +132,98 @@ class FakeEmbeddingResponseGenerator:
             for index, text in enumerate(inputs)
         ]
         return embeddings, sum(max(1, len(text.split())) for text in inputs)
+
+
+class TestModelFusionMetadataEndpoints(unittest.TestCase):
+    def _serve(self, response_generator):
+        httpd = http.server.HTTPServer(
+            ("localhost", 0),
+            lambda *args, **kwargs: APIHandler(response_generator, *args, **kwargs),
+        )
+        thread = threading.Thread(target=httpd.serve_forever)
+        thread.daemon = True
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        return httpd.server_port
+
+    def test_v1_health_shape_and_legacy_health_unchanged(self):
+        port = self._serve(FakeEmbeddingResponseGenerator())
+
+        response = requests.get(f"http://localhost:{port}/v1/health")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["provider"], "mlx-lm")
+        self.assertIsInstance(body["version"], str)
+        self.assertEqual(body["model"], "default_model")
+        self.assertIsInstance(body["mlx_version"], str)
+        self.assertIsInstance(body["platform"], str)
+        self.assertEqual(body["commit"], "unknown")
+        self.assertEqual(body["loaded_model_status"], "unknown")
+
+        legacy_response = requests.get(f"http://localhost:{port}/health")
+        self.assertEqual(legacy_response.status_code, 200)
+        self.assertEqual(legacy_response.json(), {"status": "ok"})
+
+    def test_v1_capabilities_returns_model_endpoint_contract(self):
+        response_generator = FakeEmbeddingResponseGenerator()
+        response_generator.cli_args.model = "mlx-community/Test-Chat-4bit"
+        port = self._serve(response_generator)
+
+        response = requests.get(f"http://localhost:{port}/v1/capabilities")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        endpoint = body["endpoint"]
+        validate_model_endpoint_fixture(endpoint)
+        self.assertEqual(body["object"], "capabilities")
+        self.assertEqual(body["schema"], "model_endpoint.v1")
+        self.assertEqual(body["provider"], "mlx-lm")
+        self.assertEqual(body["model"], "mlx-community/Test-Chat-4bit")
+        self.assertEqual(body["status"], "succeeded")
+        self.assertEqual(body["limits"]["max_context_tokens"], None)
+        self.assertEqual(body["limits"]["max_output_tokens"], 512)
+        self.assertEqual(body["model_info"]["estimated_memory_gb"], None)
+        self.assertEqual(body["model_info"]["quantization"], "unknown")
+        self.assertEqual(body["endpoints"]["/v1/chat/completions"], "supported")
+        self.assertEqual(body["endpoints"]["/v1/completions"], "supported")
+        self.assertEqual(body["endpoints"]["/v1/embeddings"], "supported")
+        self.assertEqual(endpoint["schema"], "model_endpoint.v1")
+        self.assertEqual(endpoint["provider"], "mlx-lm")
+        self.assertEqual(endpoint["owner"], "mlx-lm")
+        self.assertEqual(endpoint["model"], "mlx-community/Test-Chat-4bit")
+        self.assertEqual(endpoint["base_url"], f"http://localhost:{port}")
+        self.assertEqual(endpoint["api_compatibility"], "mlx-lm-server")
+        self.assertEqual(endpoint["status"], "succeeded")
+        self.assertEqual(body["capabilities"]["chat_completions"], "supported")
+        self.assertEqual(body["capabilities"]["text_completions"], "supported")
+        self.assertEqual(body["capabilities"]["streaming"], "supported")
+        self.assertEqual(body["capabilities"]["embeddings"], "supported")
+
+        expected_structured = (
+            "supported"
+            if server_module.parse_request_constraint is not None
+            else "unsupported"
+        )
+        expected_tool_calls = (
+            "supported"
+            if server_module.parse_request_constraint is not None
+            else "degraded"
+        )
+        self.assertEqual(body["capabilities"]["structured_output"], expected_structured)
+        self.assertEqual(body["capabilities"]["tool_calls"], expected_tool_calls)
+
+    def test_v1_capabilities_reports_unconfigured_embeddings(self):
+        response_generator = FakeEmbeddingResponseGenerator(embedding_model=None)
+        port = self._serve(response_generator)
+
+        response = requests.get(f"http://localhost:{port}/v1/capabilities")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["capabilities"]["embeddings"], "unsupported")
 
 
 class MockCache:
@@ -274,7 +367,7 @@ class TestOpenAIEmbeddings(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 404)
-        self.assertIn("not available", response.json()["error"])
+        self.assertIn("not available", response.json()["error"]["message"])
 
     def test_embeddings_without_configured_model_is_400(self):
         response_generator = FakeEmbeddingResponseGenerator(
@@ -288,7 +381,9 @@ class TestOpenAIEmbeddings(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("No embedding model configured", response.json()["error"])
+        self.assertIn(
+            "No embedding model configured", response.json()["error"]["message"]
+        )
 
     def test_embeddings_reject_unsupported_fields(self):
         port = self._serve(FakeEmbeddingResponseGenerator())
@@ -465,11 +560,48 @@ class TestOpenAIToolCalling(unittest.TestCase):
         self.assertEqual(len(usage_chunks), 1)
         self.assertEqual(usage_chunks[0]["usage"]["completion_tokens"], 2)
 
+    def test_model_call_id_header_echoes_on_chat_response(self):
+        port, _ = self._serve(
+            [Response("hello", 10, "normal", None, 0.0, "stop", ())]
+        )
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/chat/completions",
+            headers={"x-velum-model-call-id": "velum-call-123"},
+            json={
+                "model": "chat_model",
+                "messages": [{"role": "user", "content": "say hello"}],
+                "max_tokens": 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["x-velum-model-call-id"], "velum-call-123")
+        self.assertEqual(response.json()["choices"][0]["message"]["content"], "hello")
+
+    def test_missing_model_call_id_does_not_add_echo_header(self):
+        port, _ = self._serve(
+            [Response("hello", 10, "normal", None, 0.0, "stop", ())]
+        )
+
+        response = requests.post(
+            f"http://localhost:{port}/v1/chat/completions",
+            json={
+                "model": "chat_model",
+                "messages": [{"role": "user", "content": "say hello"}],
+                "max_tokens": 64,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("x-velum-model-call-id", response.headers)
+
     def test_tool_choice_requires_tools(self):
         port, _ = self._serve([])
 
         response = requests.post(
             f"http://localhost:{port}/v1/chat/completions",
+            headers={"x-velum-model-call-id": "velum-error-456"},
             json={
                 "model": "chat_model",
                 "messages": [{"role": "user", "content": "weather in paris?"}],
@@ -479,7 +611,28 @@ class TestOpenAIToolCalling(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("non-empty 'tools' array", response.json()["error"])
+        error = response.json()["error"]
+        self.assertIn("non-empty 'tools' array", error["message"])
+        self.assertEqual(error["type"], "invalid_request_error")
+        self.assertEqual(error["code"], "invalid_tool_choice")
+        self.assertEqual(response.headers["x-velum-model-call-id"], "velum-error-456")
+
+    def test_invalid_request_body_error_does_not_log_prompt_content(self):
+        port, _ = self._serve([])
+        secret = "secret prompt content"
+
+        with self.assertLogs(level="ERROR") as logs:
+            response = requests.post(
+                f"http://localhost:{port}/v1/chat/completions",
+                data=json.dumps([{"role": "user", "content": secret}]),
+                headers={"Content-Type": "application/json"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        error = response.json()["error"]
+        self.assertEqual(error["message"], "Request should be a JSON dictionary")
+        self.assertNotIn(secret, "\n".join(logs.output))
+        self.assertNotIn(secret, response.text)
 
     def test_forced_tool_call_requires_structured_extra(self):
         original = server_module.parse_request_constraint
@@ -499,7 +652,7 @@ class TestOpenAIToolCalling(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("mlx-lm[structured]", response.json()["error"])
+        self.assertIn("mlx-lm[structured]", response.json()["error"]["message"])
 
     def test_invalid_forced_tool_json_returns_400(self):
         port, _ = self._serve(
@@ -518,7 +671,7 @@ class TestOpenAIToolCalling(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("valid JSON tool call", response.json()["error"])
+        self.assertIn("valid JSON tool call", response.json()["error"]["message"])
 
     def test_invalid_forced_tool_json_stream_returns_400_before_sse(self):
         port, _ = self._serve(
@@ -540,7 +693,7 @@ class TestOpenAIToolCalling(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.headers["Content-Type"], "application/json")
-        self.assertIn("valid JSON tool call", response.json()["error"])
+        self.assertIn("valid JSON tool call", response.json()["error"]["message"])
 
 
 class TestServer(unittest.TestCase):

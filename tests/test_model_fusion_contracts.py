@@ -26,7 +26,25 @@ class TestModelFusionContractFixtures(unittest.TestCase):
     def test_protocol_lock_pins_fusionkit_origin(self):
         lock = model_fusion_protocol.MODEL_FUSION_PROTOCOL_LOCK
 
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_CANONICAL_SPEC,
+            "velum-labs/openclaw-shared/spec/"
+            "2026-06-16-model-fusion-protocol-packaging-spec.md",
+        )
         self.assertEqual(lock["origin"]["repo"], "velum-labs/fusionkit")
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_IDL_SOURCE_OF_TRUTH,
+            "protobuf_buf",
+        )
+        self.assertEqual(model_fusion_protocol.MODEL_FUSION_OPENAPI_STATUS, "generated")
+        self.assertIs(
+            model_fusion_protocol.MODEL_FUSION_OPENAPI_HAND_AUTHORED,
+            False,
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_SCHEMA_BUNDLE_PURPOSE,
+            "persisted_audit_benchmark_records",
+        )
         self.assertEqual(
             model_fusion_protocol.MODEL_FUSION_SCHEMA_BUNDLE_HASH,
             MODEL_FUSION_SCHEMA_BUNDLE_HASH,

@@ -24,7 +24,18 @@ def load_model_fusion_protocol_lock() -> Dict[str, Any]:
 
 
 MODEL_FUSION_PROTOCOL_LOCK = load_model_fusion_protocol_lock()
+MODEL_FUSION_CANONICAL_SPEC = MODEL_FUSION_PROTOCOL_LOCK["canonical_spec"]
+MODEL_FUSION_IDL_SOURCE_OF_TRUTH = MODEL_FUSION_PROTOCOL_LOCK["idl"][
+    "source_of_truth"
+]
+MODEL_FUSION_OPENAPI_STATUS = MODEL_FUSION_PROTOCOL_LOCK["idl"]["openapi"]["status"]
+MODEL_FUSION_OPENAPI_HAND_AUTHORED = MODEL_FUSION_PROTOCOL_LOCK["idl"]["openapi"][
+    "hand_authored"
+]
 MODEL_FUSION_SCHEMA_BUNDLE_HASH = MODEL_FUSION_PROTOCOL_LOCK["schema_bundle"]["hash"]
+MODEL_FUSION_SCHEMA_BUNDLE_PURPOSE = MODEL_FUSION_PROTOCOL_LOCK["schema_bundle"][
+    "purpose"
+]
 MODEL_FUSION_PERSISTED_RECORDS: Tuple[str, ...] = tuple(
     MODEL_FUSION_PROTOCOL_LOCK["schema_bundle"]["persisted_records"]
 )

@@ -1,10 +1,21 @@
 {
   "artifact": "model-fusion-protocol",
+  "canonical_spec": "velum-labs/openclaw-shared/spec/2026-06-16-model-fusion-protocol-packaging-spec.md",
   "origin": {
     "repo": "velum-labs/fusionkit",
     "contract_path": "contracts/model-fusion",
     "proto_path": "proto/velum/model_fusion/v1",
     "buf_module": "buf.build/velum/model-fusion"
+  },
+  "idl": {
+    "source_of_truth": "protobuf_buf",
+    "sdk_boundaries": "protobuf_buf",
+    "service_boundaries": "protobuf_buf",
+    "openapi": {
+      "status": "generated",
+      "source": "protobuf_buf",
+      "hand_authored": false
+    }
   },
   "schema_bundle": {
     "hash": "sha256:75792f89c091b6ab4fd317a15fb03fd73438563dceff5ccf9f5d7c752dbf35f3",
@@ -12,7 +23,8 @@
       "model_endpoint.v1",
       "model-call-record.v1"
     ],
-    "format": "json_schema"
+    "format": "json_schema",
+    "purpose": "persisted_audit_benchmark_records"
   },
   "generated_packages": {
     "typescript": {

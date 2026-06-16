@@ -40,7 +40,23 @@
     "typescript": {
       "package": "@velum/model-fusion-protocol",
       "registry": "github_packages",
-      "owner": "velum-labs"
+      "owner": "velum-labs",
+      "generators": {
+        "openapi_client_types": {
+          "openapi": "3.1",
+          "types": "openapi-typescript",
+          "client": "openapi-fetch"
+        },
+        "json_schema_validators": {
+          "records": "model-fusion JSON Schema bundle",
+          "validator": "ajv"
+        }
+      },
+      "exports": [
+        "generated OpenAPI client",
+        "generated OpenAPI request/response types",
+        "generated JSON Schema record validators"
+      ]
     },
     "python": {
       "import_name": "velum_model_fusion_protocol",
@@ -52,8 +68,34 @@
       "short_term_sources": [
         "github_releases_wheels",
         "uv_git_dependency"
+      ],
+      "generators": {
+        "openapi_client_models": {
+          "openapi": "3.1",
+          "client": "openapi-python-client"
+        },
+        "json_schema_validators": {
+          "records": "model-fusion JSON Schema bundle",
+          "models": "datamodel-code-generator",
+          "validators": "pydantic"
+        }
+      },
+      "exports": [
+        "generated OpenAPI client",
+        "generated OpenAPI request/response models",
+        "generated JSON Schema/Pydantic record validators"
       ]
     }
+  },
+  "generated_code_drift_check": {
+    "owner_repo": "velum-labs/fusionkit",
+    "strategy": "regenerate_and_fail_on_diff",
+    "applies_to": [
+      "typescript_openapi_client_types",
+      "typescript_json_schema_validators",
+      "python_openapi_client_models",
+      "python_json_schema_pydantic_validators"
+    ]
   },
   "service_boundaries": {
     "HarnessExecutorService": {

@@ -75,6 +75,10 @@ The validation script checks:
 - v1 protocol decisions remain JSON Schema + OpenAPI 3.1, with protobuf/Buf not
   required for v1;
 - generated protocol package coordinates remain present;
+- generated protocol package codegen choices remain pinned:
+  `openapi-typescript` + `openapi-fetch` + `ajv` for TypeScript, and
+  `openapi-python-client` + `datamodel-code-generator` + `pydantic` for Python;
+- generated-code drift strategy remains `regenerate_and_fail_on_diff`;
 - bundled fixture schema names and schema bundle hashes match the protocol lock;
   and
 - private PyPI settings are safe, or GitHub Release fallback is explicitly
@@ -85,6 +89,8 @@ The validation script checks:
 `mlx-lm` does not publish a TypeScript package. The TypeScript package
 `@velum/model-fusion-protocol` should be published by fusionkit, the protocol
 origin, using GitHub Packages/npm provenance from the JSON Schema/OpenAPI
-contract bundle. This repository only pins the expected package coordinates and
-uses Python-side import-safe validation until generated Python protocol models
-are available.
+contract bundle. It should expose generated OpenAPI client/types and generated
+JSON Schema validators, not hand-written service interfaces. This repository
+only pins the expected package coordinates and generator stack, and uses
+Python-side import-safe validation until generated Python protocol models are
+available.

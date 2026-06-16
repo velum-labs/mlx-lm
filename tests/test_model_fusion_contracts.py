@@ -70,8 +70,36 @@ class TestModelFusionContractFixtures(unittest.TestCase):
             "@velum/model-fusion-protocol",
         )
         self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_OPENAPI_TYPES_GENERATOR,
+            "openapi-typescript",
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_OPENAPI_CLIENT_GENERATOR,
+            "openapi-fetch",
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_JSON_SCHEMA_VALIDATOR,
+            "ajv",
+        )
+        self.assertEqual(
             model_fusion_protocol.MODEL_FUSION_PYTHON_IMPORT_NAME,
             "velum_model_fusion_protocol",
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_PYTHON_OPENAPI_GENERATOR,
+            "openapi-python-client",
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_PYTHON_JSON_SCHEMA_MODEL_GENERATOR,
+            "datamodel-code-generator",
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_PYTHON_JSON_SCHEMA_VALIDATOR,
+            "pydantic",
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_GENERATED_CODE_DRIFT_STRATEGY,
+            "regenerate_and_fail_on_diff",
         )
         self.assertIn(
             "MlxProviderService",

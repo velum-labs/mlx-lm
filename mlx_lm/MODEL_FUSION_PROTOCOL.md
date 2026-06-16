@@ -53,14 +53,26 @@ Fusionkit should publish generated artifacts from the same JSON Schema/OpenAPI
 contract release:
 
 - TypeScript: `@velum/model-fusion-protocol` on npm/GitHub Packages for TS
-  consumers.
+  consumers. It should expose generated OpenAPI client/types plus JSON Schema
+  record validators. The pinned generator stack is `openapi-typescript` for
+  service request/response types, `openapi-fetch` for the HTTP client, and `ajv`
+  for JSON Schema record validation.
 - Python: `velum_model_fusion_protocol` on a private PyPI-compatible registry.
   GitHub Packages is not sufficient for Python package consumption. Supported
   private-registry options should include Cloudsmith, AWS CodeArtifact, or
-  Gemfury.
+  Gemfury. It should expose generated OpenAPI client/models plus JSON
+  Schema/Pydantic record validators. The pinned generator stack is
+  `openapi-python-client` for service clients/models and
+  `datamodel-code-generator` plus `pydantic` for JSON Schema record models and
+  validators.
 - Short-term Python fallback, before a private registry is ready: wheels
   attached to GitHub Releases, or a pinned `uv` git dependency that fetches the
   generated Python package from fusionkit.
+
+Consumer repos should not hand-copy service interfaces, request/response
+models, or schema-derived record types except for temporary fixtures that carry
+clear provenance. Replace local compatibility shims with imports from generated
+packages as soon as the fusionkit artifacts are published.
 
 ## Drift checks
 
@@ -81,6 +93,9 @@ This repo runs consumer-side checks that:
 - `mlx_lm.openai_compat.MODEL_FUSION_SCHEMA_BUNDLE_HASH` comes from the lock;
 - the lock says JSON Schema and OpenAPI 3.1 are the v1 source of truth;
 - the lock says protobuf/Buf is future-facing and not required for v1;
+- the lock pins OpenAPI and JSON Schema codegen stacks for TS/Python packages;
+- release/PR validation fails if those codegen choices or drift-check strategy
+  are removed from the lock;
 - import-safe tests can load protocol metadata without importing `mlx`.
 
 ## Follow-up outside this repo
@@ -89,7 +104,10 @@ These items belong in fusionkit or the shared spec repo, not in mlx-lm:
 
 - define the canonical OpenAPI 3.1 operations for `MlxProviderService`,
   `HarnessExecutorService`, `CursorHarnessService`, and benchmark envelopes;
-- add OpenAPI validation and SDK-generation drift checks;
+- add OpenAPI validation and generated-code drift checks that regenerate
+  TypeScript OpenAPI client/types, TypeScript JSON Schema validators, Python
+  OpenAPI client/models, and Python JSON Schema/Pydantic validators, then fail
+  if the working tree differs;
 - publish `@velum/model-fusion-protocol`;
 - publish `velum_model_fusion_protocol` to a private PyPI-compatible registry;
   and

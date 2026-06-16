@@ -70,7 +70,29 @@ print(
             ),
             "schema_purpose": model_fusion_protocol.MODEL_FUSION_SCHEMA_BUNDLE_PURPOSE,
             "typescript_package": model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_PACKAGE,
+            "typescript_openapi_types": (
+                model_fusion_protocol
+                .MODEL_FUSION_TYPESCRIPT_OPENAPI_TYPES_GENERATOR
+            ),
+            "typescript_openapi_client": (
+                model_fusion_protocol
+                .MODEL_FUSION_TYPESCRIPT_OPENAPI_CLIENT_GENERATOR
+            ),
+            "typescript_json_schema_validator": (
+                model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_JSON_SCHEMA_VALIDATOR
+            ),
             "python_import": model_fusion_protocol.MODEL_FUSION_PYTHON_IMPORT_NAME,
+            "python_openapi": model_fusion_protocol.MODEL_FUSION_PYTHON_OPENAPI_GENERATOR,
+            "python_json_schema_models": (
+                model_fusion_protocol
+                .MODEL_FUSION_PYTHON_JSON_SCHEMA_MODEL_GENERATOR
+            ),
+            "python_json_schema_validator": (
+                model_fusion_protocol.MODEL_FUSION_PYTHON_JSON_SCHEMA_VALIDATOR
+            ),
+            "drift_strategy": (
+                model_fusion_protocol.MODEL_FUSION_GENERATED_CODE_DRIFT_STRATEGY
+            ),
         },
         sort_keys=True,
     )
@@ -104,7 +126,14 @@ print(
         self.assertIs(output["protobuf_required"], False)
         self.assertEqual(output["schema_purpose"], "persisted_audit_benchmark_records")
         self.assertEqual(output["typescript_package"], "@velum/model-fusion-protocol")
+        self.assertEqual(output["typescript_openapi_types"], "openapi-typescript")
+        self.assertEqual(output["typescript_openapi_client"], "openapi-fetch")
+        self.assertEqual(output["typescript_json_schema_validator"], "ajv")
         self.assertEqual(output["python_import"], "velum_model_fusion_protocol")
+        self.assertEqual(output["python_openapi"], "openapi-python-client")
+        self.assertEqual(output["python_json_schema_models"], "datamodel-code-generator")
+        self.assertEqual(output["python_json_schema_validator"], "pydantic")
+        self.assertEqual(output["drift_strategy"], "regenerate_and_fail_on_diff")
 
 
 if __name__ == "__main__":

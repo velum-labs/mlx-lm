@@ -100,6 +100,53 @@ def validate_protocol_lock() -> None:
         == "velum_model_fusion_protocol",
         "Python generated package import name",
     )
+    expect(
+        lock["generated_packages"]["typescript"]["generators"][
+            "openapi_client_types"
+        ]["types"]
+        == "openapi-typescript",
+        "TypeScript OpenAPI type generator",
+    )
+    expect(
+        lock["generated_packages"]["typescript"]["generators"][
+            "openapi_client_types"
+        ]["client"]
+        == "openapi-fetch",
+        "TypeScript OpenAPI fetch client",
+    )
+    expect(
+        lock["generated_packages"]["typescript"]["generators"][
+            "json_schema_validators"
+        ]["validator"]
+        == "ajv",
+        "TypeScript JSON Schema validator",
+    )
+    expect(
+        lock["generated_packages"]["python"]["generators"][
+            "openapi_client_models"
+        ]["client"]
+        == "openapi-python-client",
+        "Python OpenAPI client/model generator",
+    )
+    expect(
+        lock["generated_packages"]["python"]["generators"][
+            "json_schema_validators"
+        ]["models"]
+        == "datamodel-code-generator",
+        "Python JSON Schema model generator",
+    )
+    expect(
+        lock["generated_packages"]["python"]["generators"][
+            "json_schema_validators"
+        ]["validators"]
+        == "pydantic",
+        "Python JSON Schema validator runtime",
+    )
+    expect(
+        lock["generated_code_drift_check"]["strategy"]
+        == "regenerate_and_fail_on_diff",
+        "generated code drift strategy",
+    )
     schema_hash = lock["schema_bundle"]["hash"]
     persisted_records = set(lock["schema_bundle"]["persisted_records"])
     fixture_schemas = {path.name for path in FIXTURE_ROOT.iterdir() if path.is_dir()}

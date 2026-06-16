@@ -56,9 +56,30 @@ MODEL_FUSION_PERSISTED_RECORDS: Tuple[str, ...] = tuple(
 MODEL_FUSION_TYPESCRIPT_PACKAGE = MODEL_FUSION_PROTOCOL_LOCK["generated_packages"][
     "typescript"
 ]["package"]
+MODEL_FUSION_TYPESCRIPT_OPENAPI_TYPES_GENERATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["typescript"]["generators"]["openapi_client_types"]["types"]
+MODEL_FUSION_TYPESCRIPT_OPENAPI_CLIENT_GENERATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["typescript"]["generators"]["openapi_client_types"]["client"]
+MODEL_FUSION_TYPESCRIPT_JSON_SCHEMA_VALIDATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["typescript"]["generators"]["json_schema_validators"]["validator"]
 MODEL_FUSION_PYTHON_IMPORT_NAME = MODEL_FUSION_PROTOCOL_LOCK["generated_packages"][
     "python"
 ]["import_name"]
+MODEL_FUSION_PYTHON_OPENAPI_GENERATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["python"]["generators"]["openapi_client_models"]["client"]
+MODEL_FUSION_PYTHON_JSON_SCHEMA_MODEL_GENERATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["python"]["generators"]["json_schema_validators"]["models"]
+MODEL_FUSION_PYTHON_JSON_SCHEMA_VALIDATOR = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_packages"
+]["python"]["generators"]["json_schema_validators"]["validators"]
+MODEL_FUSION_GENERATED_CODE_DRIFT_STRATEGY = MODEL_FUSION_PROTOCOL_LOCK[
+    "generated_code_drift_check"
+]["strategy"]
 MODEL_FUSION_SERVICE_BOUNDARIES: Tuple[str, ...] = tuple(
     MODEL_FUSION_PROTOCOL_LOCK["service_boundaries"]
 )

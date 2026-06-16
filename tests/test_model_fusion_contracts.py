@@ -7,17 +7,12 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
+import mlx_lm.model_fusion_protocol as model_fusion_protocol
+import mlx_lm.openai_compat as openai_compat
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "model-fusion-contract"
-OPENAI_COMPAT_PATH = REPO_ROOT / "mlx_lm" / "openai_compat.py"
 SERVER_METADATA_PATH = REPO_ROOT / "mlx_lm" / "server_metadata.py"
-
-OPENAI_COMPAT_SPEC = importlib.util.spec_from_file_location(
-    "mlx_lm_openai_compat_for_tests",
-    OPENAI_COMPAT_PATH,
-)
-openai_compat = importlib.util.module_from_spec(OPENAI_COMPAT_SPEC)
-OPENAI_COMPAT_SPEC.loader.exec_module(openai_compat)
 
 MODEL_FUSION_SCHEMA_BUNDLE_HASH = openai_compat.MODEL_FUSION_SCHEMA_BUNDLE_HASH
 validate_model_call_record_fixture = openai_compat.validate_model_call_record_fixture
@@ -28,6 +23,44 @@ validate_model_fusion_contract_fixture = (
 
 
 class TestModelFusionContractFixtures(unittest.TestCase):
+    def test_protocol_lock_pins_fusionkit_origin(self):
+        lock = model_fusion_protocol.MODEL_FUSION_PROTOCOL_LOCK
+
+        self.assertEqual(lock["origin"]["repo"], "velum-labs/fusionkit")
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_SCHEMA_BUNDLE_HASH,
+            MODEL_FUSION_SCHEMA_BUNDLE_HASH,
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_PACKAGE,
+            "@velum/model-fusion-protocol",
+        )
+        self.assertEqual(
+            model_fusion_protocol.MODEL_FUSION_PYTHON_IMPORT_NAME,
+            "velum_model_fusion_protocol",
+        )
+        self.assertIn(
+            "MlxProviderService",
+            model_fusion_protocol.MODEL_FUSION_SERVICE_BOUNDARIES,
+        )
+
+    def test_protocol_lock_matches_bundled_fixture_schemas(self):
+        fixture_schemas = {
+            path.name for path in FIXTURE_ROOT.iterdir() if path.is_dir()
+        }
+
+        self.assertEqual(
+            fixture_schemas,
+            set(model_fusion_protocol.MODEL_FUSION_PERSISTED_RECORDS),
+        )
+        for schema_name in fixture_schemas:
+            for fixture_path in (FIXTURE_ROOT / schema_name).glob("*.json"):
+                fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    fixture["schema_bundle_hash"],
+                    model_fusion_protocol.MODEL_FUSION_SCHEMA_BUNDLE_HASH,
+                )
+
     def test_local_provider_fixtures_validate(self):
         for schema_name, validator in (
             ("model_endpoint.v1", validate_model_endpoint_fixture),

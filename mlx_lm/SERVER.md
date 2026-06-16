@@ -256,13 +256,17 @@ limits such as context length, memory estimate, and quantization are reported as
 
 ### Model Fusion Provider Fixtures
 
-`mlx-lm` includes local, dependency-free validation helpers for the
-`model_endpoint.v1` and `model-call-record.v1` provider contract fixtures used
-by downstream model-fusion tooling. These checks live in
-`mlx_lm.openai_compat` and validate the contract metadata, required fields,
-allowed enum values, hashes, timestamps, usage objects, messages, and rejection
-of unsupported fields without importing FusionKit, HandoffKit, or CursorKit
-runtime code.
+`mlx-lm` consumes the fusionkit-origin model-fusion protocol rather than owning
+the contract. The current artifact pin lives in
+`mlx_lm/model_fusion_protocol.lock.json`; see
+[`MODEL_FUSION_PROTOCOL.md`](MODEL_FUSION_PROTOCOL.md) for the intended
+protobuf/Buf IDL, generated TypeScript/Python package paths, and drift checks.
+Until generated Python bindings are available from a private package index,
+`mlx_lm.openai_compat` keeps local, dependency-free validation helpers for the
+`model_endpoint.v1` and `model-call-record.v1` provider fixtures. These helpers
+validate the contract metadata, required fields, allowed enum values, hashes,
+timestamps, usage objects, messages, and rejection of unsupported fields without
+importing FusionKit, HandoffKit, or CursorKit runtime code.
 
 The HTTP server exposes `make_model_endpoint_fixture(...)` for tests and local
 tooling that need to build a schema-valid endpoint fixture for an MLX server.

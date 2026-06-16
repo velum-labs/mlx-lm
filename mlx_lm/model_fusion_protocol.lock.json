@@ -1,0 +1,61 @@
+{
+  "artifact": "model-fusion-protocol",
+  "origin": {
+    "repo": "velum-labs/fusionkit",
+    "contract_path": "contracts/model-fusion",
+    "proto_path": "proto/velum/model_fusion/v1",
+    "buf_module": "buf.build/velum/model-fusion"
+  },
+  "schema_bundle": {
+    "hash": "sha256:75792f89c091b6ab4fd317a15fb03fd73438563dceff5ccf9f5d7c752dbf35f3",
+    "persisted_records": [
+      "model_endpoint.v1",
+      "model-call-record.v1"
+    ],
+    "format": "json_schema"
+  },
+  "generated_packages": {
+    "typescript": {
+      "package": "@velum/model-fusion-protocol",
+      "registry": "github_packages",
+      "owner": "velum-labs"
+    },
+    "python": {
+      "import_name": "velum_model_fusion_protocol",
+      "preferred_registries": [
+        "cloudsmith",
+        "aws_codeartifact",
+        "gemfury"
+      ],
+      "short_term_sources": [
+        "github_releases_wheels",
+        "uv_git_dependency"
+      ]
+    }
+  },
+  "service_boundaries": {
+    "HarnessExecutorService": {
+      "owner": "handoffkit",
+      "consumer": "fusionkit",
+      "purpose": "coding task execution"
+    },
+    "CursorHarnessService": {
+      "owner": "cursorkit",
+      "consumer": "fusionkit",
+      "purpose": "adapter output"
+    },
+    "MlxProviderService": {
+      "owner": "mlx-lm",
+      "consumer": "fusionkit",
+      "purpose": "provider capability and model-call metadata"
+    },
+    "BenchmarkExecutionEnvelope": {
+      "owner": "fusionkit",
+      "purpose": "benchmark execution request metadata"
+    },
+    "BenchmarkJoinEnvelope": {
+      "owner": "fusionkit",
+      "purpose": "benchmark result join metadata"
+    }
+  }
+}

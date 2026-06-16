@@ -27,6 +27,7 @@ class BlockMlxImporter(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockMlxImporter())
 
 import mlx_lm.openai_compat as openai_compat
+import mlx_lm.model_fusion_protocol as model_fusion_protocol
 import mlx_lm.server_metadata as server_metadata
 from mlx_lm.tool_parsers import json_tools
 
@@ -57,6 +58,8 @@ print(
             "schema": response["schema"],
             "tool_calls": response["capabilities"]["tool_calls"],
             "parsed_tool": parsed_tool_call["name"],
+            "typescript_package": model_fusion_protocol.MODEL_FUSION_TYPESCRIPT_PACKAGE,
+            "python_import": model_fusion_protocol.MODEL_FUSION_PYTHON_IMPORT_NAME,
         },
         sort_keys=True,
     )
@@ -82,6 +85,8 @@ print(
         self.assertEqual(output["schema"], "model_endpoint.v1")
         self.assertEqual(output["tool_calls"], "degraded")
         self.assertEqual(output["parsed_tool"], "search")
+        self.assertEqual(output["typescript_package"], "@velum/model-fusion-protocol")
+        self.assertEqual(output["python_import"], "velum_model_fusion_protocol")
 
 
 if __name__ == "__main__":

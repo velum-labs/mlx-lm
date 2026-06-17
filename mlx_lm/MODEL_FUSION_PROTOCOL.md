@@ -11,8 +11,8 @@ This repo records the decision in `model_fusion_protocol.lock.json` so CI can
 catch accidental local drift even when the generated packages are not installed.
 
 - Contract origin: `velum-labs/fusionkit`.
-- JSON Schema bundle path in the origin repo: `contracts/model-fusion`.
-- OpenAPI 3.1 path in the origin repo: `openapi/model-fusion.v1.yaml`.
+- Protocol package path in the origin repo: `spec/model-fusion-contract`.
+- OpenAPI 3.1 path in the origin repo: `spec/model-fusion-contract/openapi/model-fusion.v1.openapi.json`.
 - Current schema bundle hash consumed by this repo:
   `sha256:75792f89c091b6ab4fd317a15fb03fd73438563dceff5ccf9f5d7c752dbf35f3`.
 

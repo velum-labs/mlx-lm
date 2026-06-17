@@ -3,8 +3,8 @@
   "canonical_spec": "velum-labs/openclaw-shared/spec/2026-06-16-model-fusion-protocol-packaging-spec.md",
   "origin": {
     "repo": "velum-labs/fusionkit",
-    "contract_path": "contracts/model-fusion",
-    "openapi_path": "openapi/model-fusion.v1.yaml"
+    "contract_path": "spec/model-fusion-contract",
+    "openapi_path": "spec/model-fusion-contract/openapi/model-fusion.v1.openapi.json"
   },
   "v1_contracts": {
     "durable_records": "json_schema",

@@ -32,6 +32,11 @@ class TestModelFusionContractFixtures(unittest.TestCase):
             "2026-06-16-model-fusion-protocol-packaging-spec.md",
         )
         self.assertEqual(lock["origin"]["repo"], "velum-labs/fusionkit")
+        self.assertEqual(lock["origin"]["contract_path"], "spec/model-fusion-contract")
+        self.assertEqual(
+            lock["origin"]["openapi_path"],
+            "spec/model-fusion-contract/openapi/model-fusion.v1.openapi.json",
+        )
         self.assertEqual(
             model_fusion_protocol.MODEL_FUSION_CONTRACT_SOURCE_OF_TRUTH,
             "json_schema_openapi_3_1",

@@ -80,6 +80,15 @@ def validate_protocol_lock() -> None:
     lock = json.loads(PROTOCOL_LOCK_PATH.read_text(encoding="utf-8"))
     expect(lock["origin"]["repo"] == "velum-labs/fusionkit", "fusionkit origin")
     expect(
+        lock["origin"]["contract_path"] == "spec/model-fusion-contract",
+        "fusionkit protocol package path",
+    )
+    expect(
+        lock["origin"]["openapi_path"]
+        == "spec/model-fusion-contract/openapi/model-fusion.v1.openapi.json",
+        "fusionkit OpenAPI path",
+    )
+    expect(
         lock["v1_contracts"]["source_of_truth"] == "json_schema_openapi_3_1",
         "v1 JSON Schema/OpenAPI source of truth",
     )

@@ -43,6 +43,7 @@ jobs:
         run: |
           python -m py_compile \
             mlx_lm/model_fusion_protocol.py \
+            mlx_lm/model_fusion_contracts.py \
             mlx_lm/openai_compat.py \
             mlx_lm/server_metadata.py \
             scripts/model_fusion_live_smoke.py \

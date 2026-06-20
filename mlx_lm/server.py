@@ -62,10 +62,8 @@ from .sample_utils import make_logits_processors, make_sampler
 from .server_metadata import (
     loaded_model_status,
     make_capabilities_response,
-    make_endpoint_support,
     make_health_response,
     make_model_endpoint_fixture,
-    make_server_capabilities,
     resolve_model_id,
 )
 from .utils import _parse_size, load, sharded_load
@@ -1909,19 +1907,6 @@ class APIHandler(BaseHTTPRequestHandler):
         if host is None:
             return None
         return f"http://{host}"
-
-    def _capabilities(self):
-        embedding_model = getattr(
-            self.response_generator.cli_args, "embedding_model", None
-        )
-        return make_server_capabilities(
-            structured_output_available=parse_request_constraint is not None,
-            embedding_model=embedding_model,
-        )
-
-    def _endpoint_support(self):
-        capabilities = self._capabilities()
-        return make_endpoint_support(capabilities)
 
     def handle_capabilities_request(self):
         """

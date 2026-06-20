@@ -7,6 +7,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import mlx.core as mx
 
 
+# Caps that bound the work a single unauthenticated /v1/embeddings request can
+# trigger (model load + inference). Exceeding any of these is a 400, not an OOM.
+MAX_EMBEDDING_INPUTS = 2048
+MAX_EMBEDDING_INPUT_CHARS = 100_000
+MAX_EMBEDDING_TOTAL_CHARS = 2_000_000
+
+
 class EmbeddingError(ValueError):
     """Base class for embedding request and model errors."""
 
@@ -62,6 +69,25 @@ def parse_embedding_request(
         input_list = inputs
     else:
         raise EmbeddingError("'input' must be a string or an array of strings")
+
+    if len(input_list) > MAX_EMBEDDING_INPUTS:
+        raise EmbeddingError(
+            f"'input' accepts at most {MAX_EMBEDDING_INPUTS} items "
+            f"(received {len(input_list)})"
+        )
+    total_chars = 0
+    for item in input_list:
+        if len(item) > MAX_EMBEDDING_INPUT_CHARS:
+            raise EmbeddingError(
+                f"each 'input' item must be at most {MAX_EMBEDDING_INPUT_CHARS} "
+                "characters"
+            )
+        total_chars += len(item)
+    if total_chars > MAX_EMBEDDING_TOTAL_CHARS:
+        raise EmbeddingError(
+            f"total 'input' size must be at most {MAX_EMBEDDING_TOTAL_CHARS} "
+            "characters"
+        )
 
     return EmbeddingRequest(model=configured_model or model, inputs=input_list)
 

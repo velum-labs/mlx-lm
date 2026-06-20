@@ -39,9 +39,15 @@ def main() -> int:
 
 
 def read_version() -> str:
-    namespace = {}
-    exec(VERSION_PATH.read_text(encoding="utf-8"), namespace)
-    version = namespace.get("__version__")
+    # Parse __version__ with a regex rather than exec()'ing the module: the file
+    # is trusted, but executing it is unnecessary for a single string literal.
+    source = VERSION_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"""^__version__\s*=\s*["'](?P<version>[^"']+)["']""",
+        source,
+        re.MULTILINE,
+    )
+    version = match.group("version") if match else None
     if not isinstance(version, str) or not version:
         raise SystemExit("mlx_lm/_version.py must define a non-empty __version__")
     return version

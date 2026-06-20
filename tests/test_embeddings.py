@@ -4,6 +4,8 @@ import unittest
 import mlx.core as mx
 
 from mlx_lm.embeddings import (
+    MAX_EMBEDDING_INPUT_CHARS,
+    MAX_EMBEDDING_INPUTS,
     EmbeddingError,
     EmbeddingModelError,
     EmbeddingModelUnavailableError,
@@ -89,6 +91,27 @@ class TestEmbeddingRequestParsing(unittest.TestCase):
                 {"model": "other", "input": "x"},
                 configured_model="embed",
             )
+
+    def test_rejects_too_many_inputs(self):
+        with self.assertRaises(EmbeddingError):
+            parse_embedding_request(
+                {"model": "embed", "input": ["x"] * (MAX_EMBEDDING_INPUTS + 1)},
+                configured_model="embed",
+            )
+
+    def test_rejects_oversized_input_item(self):
+        with self.assertRaises(EmbeddingError):
+            parse_embedding_request(
+                {"model": "embed", "input": "x" * (MAX_EMBEDDING_INPUT_CHARS + 1)},
+                configured_model="embed",
+            )
+
+    def test_accepts_inputs_at_the_cap(self):
+        request = parse_embedding_request(
+            {"model": "embed", "input": ["ok"] * MAX_EMBEDDING_INPUTS},
+            configured_model="embed",
+        )
+        self.assertEqual(len(request.inputs), MAX_EMBEDDING_INPUTS)
 
 
 class TestEmbeddingProvider(unittest.TestCase):

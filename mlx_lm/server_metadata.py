@@ -4,7 +4,7 @@ import datetime
 from typing import Any, Dict, List, Optional
 
 from ._version import __version__
-from .openai_compat import (
+from .model_fusion_contracts import (
     MODEL_FUSION_SCHEMA_BUNDLE_HASH,
     validate_model_endpoint_fixture,
 )
